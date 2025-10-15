@@ -1,0 +1,24 @@
+# Node
+node_modules/
+*.log
+.env
+.env.local
+
+# Terraform
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+
+# GCP
+credentials.json
+service-account-key.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
