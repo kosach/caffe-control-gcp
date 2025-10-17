@@ -1,0 +1,9 @@
+{
+  "name": "get-all-transactions",
+  "version": "1.0.0",
+  "main": "getAllTransactions.js",
+  "type": "commonjs",
+  "engines": {
+    "node": "20"
+  }
+}

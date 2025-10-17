@@ -6,6 +6,10 @@ terraform {
       source  = "hashicorp/google"
       version = "~> 5.0"
     }
+    archive = {
+      source  = "hashicorp/archive"
+      version = "~> 2.4"
+    }
   }
 }
 
@@ -123,4 +127,26 @@ resource "google_secret_manager_secret_iam_member" "mongodb_uri_access" {
   secret_id = google_secret_manager_secret.mongodb_uri.id
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${google_service_account.functions_sa.email}"
+}
+
+# Deploy getAllTransactions function
+module "get_all_transactions" {
+  source = "./modules/cloud-function"
+  
+  function_name         = "getAllTransactions"
+  entry_point          = "getAllTransactions"
+  source_dir           = "../functions/nodejs/dist-bundle"
+  region               = var.region
+  service_account_email = google_service_account.functions_sa.email
+  project_id           = var.project_id
+  
+  depends_on = [
+    google_project_service.required_apis,
+    google_storage_bucket.functions_source
+  ]
+}
+
+output "getAllTransactions_url" {
+  description = "URL of getAllTransactions function"
+  value       = module.get_all_transactions.function_uri
 }
