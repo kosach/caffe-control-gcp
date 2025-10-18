@@ -1,0 +1,12 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+dist-bundle/
+
+# Tests
+coverage/
+
+# OS files
+.DS_Store

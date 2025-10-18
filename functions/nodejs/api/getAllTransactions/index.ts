@@ -1,5 +1,5 @@
 import { Request, Response } from '@google-cloud/functions-framework';
-import { connectToDatabase } from '../../utils/mongodb';
+import { connectToDatabase, getSecret } from '../../utils/mongodb';
 
 interface QueryParams {
   startDate?: string;
@@ -13,15 +13,23 @@ export async function getAllTransactions(req: Request, res: Response) {
     console.log('🚀 Function started');
     const query = req.query as QueryParams;
     const { startDate, endDate, limit } = query;
+    const authToken = query['auth-token'];
 
-    console.log('📋 Query params:', JSON.stringify(query));
+    // Check authentication
+    const validToken = await getSecret('api-auth-key');
+    if (!authToken || authToken !== validToken) {
+      console.warn('⚠️ Invalid or missing auth token');
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    console.log('✅ Auth validated');
+    console.log('📋 Query params:', JSON.stringify({ startDate, endDate, limit }));
     console.log('🔌 Connecting to database...');
     
     const { db } = await connectToDatabase();
     console.log('✅ Database connected');
     
     const transactionsCollection = db.collection('transactions');
-    console.log('📦 Collection obtained');
 
     const mongoQuery: any = {};
 
@@ -33,7 +41,7 @@ export async function getAllTransactions(req: Request, res: Response) {
       };
     }
 
-    const limitNum = limit ? parseInt(limit) : 100; // Default limit 100
+    const limitNum = limit ? parseInt(limit) : 100;
 
     console.log('🔍 Executing query with limit:', limitNum);
     const transactions = await transactionsCollection

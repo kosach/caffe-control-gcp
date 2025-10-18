@@ -1,24 +1,29 @@
-# Node
-node_modules/
-*.log
+# Environment
 .env
-.env.local
+
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+dist-bundle/
 
 # Terraform
-**/.terraform/*
+.terraform/
 *.tfstate
-*.tfstate.*
-*.tfvars
-!*.tfvars.example
+*.tfstate.backup
+.terraform.lock.hcl
 
-# GCP
-credentials.json
-service-account-key.json
+# Tests
+coverage/
 
-# IDE
-.vscode/
-.idea/
-*.swp
-
-# OS
+# OS files
 .DS_Store
+.vscode/
+
+# Logs
+*.log
+
+# Terraform secrets
+terraform/terraform.tfvars
+terraform/**/.tmp/

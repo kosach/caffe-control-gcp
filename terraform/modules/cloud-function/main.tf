@@ -54,7 +54,7 @@ resource "google_cloudfunctions2_function" "function" {
   }
 
   service_config {
-    available_memory      = "512M"
+    available_memory      = "256M"
     timeout_seconds       = 60
     service_account_email = var.service_account_email
     
