@@ -11,6 +11,7 @@
   "dependencies": {
     "@google-cloud/functions-framework": "^3.3.0",
     "@google-cloud/secret-manager": "^5.0.0",
+    "dotenv": "^17.2.3",
     "mongodb": "^6.3.0"
   },
   "devDependencies": {

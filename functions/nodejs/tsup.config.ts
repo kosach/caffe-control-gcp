@@ -1,4 +1,6 @@
 import { defineConfig } from 'tsup';
+import fs from 'fs';
+import path from 'path';
 
 export default defineConfig({
   entry: {
@@ -13,4 +15,23 @@ export default defineConfig({
   minify: false,
   external: ['@google-cloud/functions-framework'],
   noExternal: ['mongodb', '@google-cloud/secret-manager'],
+  onSuccess: async () => {
+    // Create package.json after build
+    const packageJson = {
+      name: 'caffe-control-functions-bundle',
+      version: '1.0.0',
+      main: 'getAllTransactions.js',
+      type: 'commonjs',
+      engines: {
+        node: '20'
+      }
+    };
+    
+    fs.writeFileSync(
+      path.join(__dirname, 'dist-bundle/package.json'),
+      JSON.stringify(packageJson, null, 2)
+    );
+    
+    console.log('✅ package.json created');
+  }
 });

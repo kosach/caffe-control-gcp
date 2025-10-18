@@ -1,5 +1,5 @@
 {
-  "name": "get-all-transactions",
+  "name": "caffe-control-functions-bundle",
   "version": "1.0.0",
   "main": "getAllTransactions.js",
   "type": "commonjs",
