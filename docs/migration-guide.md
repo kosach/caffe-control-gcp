@@ -13,9 +13,9 @@ Step-by-step guide for migrating from MongoDB Atlas App Services to GCP Cloud Fu
 - [x] Create secrets placeholders
 
 ### Phase 2: Secrets Setup
-- [ ] Fill MongoDB URI
-- [ ] Fill Poster API tokens
-- [ ] Fill API authentication keys
+- [x] Fill MongoDB URI
+- [x] Fill Poster API tokens
+- [x] Fill API authentication keys
 
 ### Phase 3: Functions Migration
 
