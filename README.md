@@ -17,6 +17,17 @@ cd terraform && terraform apply && cd ..
 ./scripts/set-secrets.sh
 ```
 
+## Run Script
+
+The helper script `./run.sh` wraps the most common project tasks:
+
+- `./run.sh tests` — run the Jest suite inside `functions/nodejs`.
+- `./run.sh build` — create the production bundle via `npm run bundle`.
+- `./run.sh local [name]` — start the local Functions Framework (defaults to the `webhook` function when no name is provided).
+- `./run.sh diff [-f]` — print modified/new files; append `-f` to save the output to `diff.txt`.
+
+Use `./run.sh --help` to see the latest command list and examples.
+
 ## Project Structure
 ```
 ├── terraform/          # Infrastructure as Code
@@ -40,4 +51,3 @@ cd terraform && terraform apply && cd ..
 - **Runtime**: Node.js 20
 - **Database**: MongoDB Atlas
 - **Functions**: Cloud Functions (2nd gen)
-

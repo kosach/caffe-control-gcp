@@ -2,6 +2,10 @@
   "name": "caffe-control-functions-bundle",
   "version": "1.0.0",
   "main": "getAllTransactions.js",
+  "exports": {
+    "./getAllTransactions": "./getAllTransactions.js",
+    "./webhook": "./webhook.js"
+  },
   "type": "commonjs",
   "engines": {
     "node": "20"

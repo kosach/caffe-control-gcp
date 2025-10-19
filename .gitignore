@@ -27,3 +27,5 @@ coverage/
 # Terraform secrets
 terraform/terraform.tfvars
 terraform/**/.tmp/
+
+diff.txt

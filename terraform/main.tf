@@ -134,11 +134,27 @@ module "get_all_transactions" {
   source = "./modules/cloud-function"
   
   function_name         = "getAllTransactions"
-  entry_point          = "getAllTransactions"
-  source_dir           = "../functions/nodejs/dist-bundle"
-  region               = var.region
+  entry_point           = "getAllTransactions"
+  source_dir            = "../functions/nodejs/dist-bundle"
+  region                = var.region
   service_account_email = google_service_account.functions_sa.email
-  project_id           = var.project_id
+  project_id            = var.project_id
+  
+  depends_on = [
+    google_project_service.required_apis,
+    google_storage_bucket.functions_source
+  ]
+}
+
+module "webhook" {
+  source = "./modules/cloud-function"
+  
+  function_name         = "webhook"
+  entry_point           = "webhook"
+  source_dir            = "../functions/nodejs/dist-bundle"
+  region                = var.region
+  service_account_email = google_service_account.functions_sa.email
+  project_id            = var.project_id
   
   depends_on = [
     google_project_service.required_apis,
@@ -149,4 +165,9 @@ module "get_all_transactions" {
 output "getAllTransactions_url" {
   description = "URL of getAllTransactions function"
   value       = module.get_all_transactions.function_uri
+}
+
+output "webhook_url" {
+  description = "URL of webhook function"
+  value       = module.webhook.function_uri
 }

@@ -3,7 +3,7 @@ import { getAllTransactions } from './index';
 // Mock dependencies
 jest.mock('../../utils/mongodb');
 
-import { connectToDatabase } from '../../utils/mongodb';
+import { connectToDatabase, getSecret } from '../../utils/mongodb';
 
 describe('getAllTransactions', () => {
   let mockRequest: any;
@@ -16,13 +16,17 @@ describe('getAllTransactions', () => {
     mockStatus = jest.fn().mockReturnValue({ json: mockJson });
     
     mockRequest = {
-      query: {}
+      query: {
+        'auth-token': 'valid-token'
+      }
     };
 
     mockResponse = {
       status: mockStatus,
       json: mockJson
     };
+
+    (getSecret as jest.Mock).mockResolvedValue('valid-token');
   });
 
   afterEach(() => {
@@ -35,10 +39,13 @@ describe('getAllTransactions', () => {
       { transaction_id: '2', payed_sum: '2000' }
     ];
 
+    const mockCursor = {
+      limit: jest.fn().mockReturnThis(),
+      toArray: jest.fn().mockResolvedValue(mockTransactions)
+    };
+
     const mockCollection = {
-      find: jest.fn().mockReturnValue({
-        toArray: jest.fn().mockResolvedValue(mockTransactions)
-      })
+      find: jest.fn().mockReturnValue(mockCursor)
     };
 
     (connectToDatabase as jest.Mock).mockResolvedValue({
@@ -51,19 +58,24 @@ describe('getAllTransactions', () => {
 
     expect(mockStatus).toHaveBeenCalledWith(200);
     expect(mockJson).toHaveBeenCalledWith(mockTransactions);
+    expect(mockCursor.limit).toHaveBeenCalledWith(100);
     expect(mockCollection.find).toHaveBeenCalledWith({});
   });
 
   test('should filter by date range', async () => {
+    const mockCursor = {
+      limit: jest.fn().mockReturnThis(),
+      toArray: jest.fn().mockResolvedValue([])
+    };
+
     mockRequest.query = {
       startDate: '2025-01-01',
-      endDate: '2025-01-31'
+      endDate: '2025-01-31',
+      'auth-token': 'valid-token'
     };
 
     const mockCollection = {
-      find: jest.fn().mockReturnValue({
-        toArray: jest.fn().mockResolvedValue([])
-      })
+      find: jest.fn().mockReturnValue(mockCursor)
     };
 
     (connectToDatabase as jest.Mock).mockResolvedValue({

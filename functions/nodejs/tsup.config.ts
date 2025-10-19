@@ -5,6 +5,7 @@ import path from 'path';
 export default defineConfig({
   entry: {
     'getAllTransactions': 'api/getAllTransactions/index.ts',
+    'webhook': 'api/webhook/index.ts'
   },
   format: ['cjs'],
   target: 'node20',
@@ -21,6 +22,10 @@ export default defineConfig({
       name: 'caffe-control-functions-bundle',
       version: '1.0.0',
       main: 'getAllTransactions.js',
+      exports: {
+        './getAllTransactions': './getAllTransactions.js',
+        './webhook': './webhook.js'
+      },
       type: 'commonjs',
       engines: {
         node: '20'
