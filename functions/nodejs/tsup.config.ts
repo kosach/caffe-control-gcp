@@ -2,6 +2,8 @@ import { defineConfig } from 'tsup';
 import fs from 'fs';
 import path from 'path';
 
+const functions = ['getAllTransactions', 'webhook'];
+
 export default defineConfig({
   entry: {
     'getAllTransactions': 'api/getAllTransactions/index.ts',
@@ -17,26 +19,37 @@ export default defineConfig({
   external: ['@google-cloud/functions-framework'],
   noExternal: ['mongodb', '@google-cloud/secret-manager'],
   onSuccess: async () => {
-    // Create package.json after build
-    const packageJson = {
-      name: 'caffe-control-functions-bundle',
-      version: '1.0.0',
-      main: 'getAllTransactions.js',
-      exports: {
-        './getAllTransactions': './getAllTransactions.js',
-        './webhook': './webhook.js'
-      },
-      type: 'commonjs',
-      engines: {
-        node: '20'
+    // Create separate directories for each function
+    functions.forEach(functionName => {
+      const functionDir = path.join(__dirname, 'dist-bundle', functionName);
+
+      // Create function directory if it doesn't exist
+      if (!fs.existsSync(functionDir)) {
+        fs.mkdirSync(functionDir, { recursive: true });
       }
-    };
-    
-    fs.writeFileSync(
-      path.join(__dirname, 'dist-bundle/package.json'),
-      JSON.stringify(packageJson, null, 2)
-    );
-    
-    console.log('✅ package.json created');
+
+      // Copy bundled file to function directory as index.js
+      const sourceFile = path.join(__dirname, 'dist-bundle', `${functionName}.js`);
+      const targetFile = path.join(functionDir, 'index.js');
+      fs.copyFileSync(sourceFile, targetFile);
+
+      // Create package.json for this function
+      const packageJson = {
+        name: `caffe-control-${functionName.toLowerCase()}`,
+        version: '1.0.0',
+        main: 'index.js',
+        type: 'commonjs',
+        engines: {
+          node: '20'
+        }
+      };
+
+      fs.writeFileSync(
+        path.join(functionDir, 'package.json'),
+        JSON.stringify(packageJson, null, 2)
+      );
+
+      console.log(`✅ ${functionName} package created`);
+    });
   }
 });

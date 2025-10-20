@@ -73,6 +73,16 @@ resource "google_cloudfunctions2_function_iam_member" "invoker" {
   member         = "allUsers"
 }
 
+# Make underlying Cloud Run service publicly accessible
+# Cloud Functions v2 deploys to Cloud Run with lowercase service name
+resource "google_cloud_run_service_iam_member" "invoker" {
+  project  = google_cloudfunctions2_function.function.project
+  location = google_cloudfunctions2_function.function.location
+  service  = lower(google_cloudfunctions2_function.function.name)
+  role     = "roles/run.invoker"
+  member   = "allUsers"
+}
+
 output "function_uri" {
   value = google_cloudfunctions2_function.function.service_config[0].uri
 }

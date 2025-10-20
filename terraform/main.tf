@@ -132,14 +132,14 @@ resource "google_secret_manager_secret_iam_member" "mongodb_uri_access" {
 # Deploy getAllTransactions function
 module "get_all_transactions" {
   source = "./modules/cloud-function"
-  
+
   function_name         = "getAllTransactions"
   entry_point           = "getAllTransactions"
-  source_dir            = "../functions/nodejs/dist-bundle"
+  source_dir            = "../functions/nodejs/dist-bundle/getAllTransactions"
   region                = var.region
   service_account_email = google_service_account.functions_sa.email
   project_id            = var.project_id
-  
+
   depends_on = [
     google_project_service.required_apis,
     google_storage_bucket.functions_source
@@ -148,14 +148,14 @@ module "get_all_transactions" {
 
 module "webhook" {
   source = "./modules/cloud-function"
-  
+
   function_name         = "webhook"
   entry_point           = "webhook"
-  source_dir            = "../functions/nodejs/dist-bundle"
+  source_dir            = "../functions/nodejs/dist-bundle/webhook"
   region                = var.region
   service_account_email = google_service_account.functions_sa.email
   project_id            = var.project_id
-  
+
   depends_on = [
     google_project_service.required_apis,
     google_storage_bucket.functions_source
