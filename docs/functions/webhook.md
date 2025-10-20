@@ -86,7 +86,33 @@ Save RAW data & continue processing
 
 ## Request Body
 
-### Structure
+The webhook supports **two payload formats**:
+
+### Format 1: Real Poster Webhook Format (Primary)
+
+This is the actual format sent by Poster POS system.
+
+```json
+{
+  "account": "mykava6",
+  "object": "transaction",
+  "object_id": 16776,
+  "action": "changed",
+  "time": "1688722229",
+  "verify": "f6a209fccb87d7051d49bf3342c656ab",
+  "account_number": "333226",
+  "data": "{\"transactions_history\":{\"type_history\":\"additem\",\"time\":1688722229115}}"
+}
+```
+
+**Key characteristics:**
+- `object_id` contains the transaction ID (mapped to `transaction_id` internally)
+- `action` is typically `"changed"` (mapped to `"closed"` for transaction storage)
+- `data` is a **JSON string** that needs to be parsed
+- Contains Poster-specific fields: `account`, `verify`, `time`, etc.
+
+### Format 2: Simplified Format (Backwards Compatibility)
+
 ```json
 {
   "action": "created" | "updated" | "closed",
@@ -105,10 +131,23 @@ Save RAW data & continue processing
 }
 ```
 
+**Key characteristics:**
+- Direct `transaction_id` field
+- Parsed `data` object (not JSON string)
+- Simpler structure for testing/debugging
+
 ### Supported Actions
-- `created` - Transaction created (initial state)
-- `updated` - Transaction updated (items added/removed)
-- `closed` - Transaction completed (payment processed)
+
+| Poster Action | Mapped To | Saved to Transactions? | Notes |
+|---------------|-----------|----------------------|-------|
+| `changed` | `closed` | ✅ YES | Poster's primary action for completed transactions |
+| `closed` | `closed` | ✅ YES | Simplified format |
+| `created` | `created` | ❌ NO | Transaction started |
+| `updated` | `updated` | ❌ NO | Transaction modified |
+
+**Action Mapping Logic:**
+- Poster sends `action: "changed"` → Function maps to `"closed"` → Saves to `transactions` collection
+- This ensures Poster webhooks are properly stored
 
 ## Processing Logic (Step by Step)
 
@@ -152,6 +191,53 @@ rawHookId = result.insertedId;
 - Ensures no data loss even if validation fails
 - Provides audit trail for debugging
 - Allows replaying failed webhooks
+
+### Step 3.5: Normalize Payload Format
+```typescript
+// Parse the request body
+const rawPayload = parsePayload(req.body);
+
+// Detect and normalize Poster format to standard format
+payload = normalizePosterPayload(rawPayload);
+
+// Poster format detection:
+if (rawPayload.object_id !== undefined) {
+  // Real Poster webhook detected
+  console.log('📦 Detected real Poster webhook format');
+
+  // Parse nested JSON string in data field
+  let parsedData = {};
+  if (typeof rawPayload.data === 'string') {
+    parsedData = JSON.parse(rawPayload.data);
+  }
+
+  // Return normalized format
+  return {
+    action: rawPayload.action,
+    data: {
+      transaction_id: rawPayload.object_id,
+      ...parsedData,
+      // Preserve Poster fields for audit
+      poster_account: rawPayload.account,
+      poster_verify: rawPayload.verify,
+      ...
+    }
+  };
+}
+
+// Map 'changed' action to 'closed'
+if (action === 'changed') {
+  action = 'closed';
+  console.log('🔄 Mapped action "changed" → "closed"');
+}
+```
+
+**Normalization Process:**
+1. Detect format by checking for `object_id` field
+2. Parse nested JSON string in `data` field if present
+3. Map `object_id` → `transaction_id`
+4. Preserve Poster-specific fields for audit trail
+5. Map `action: "changed"` → `"closed"`
 
 ### Step 4: Validate Payload
 ```typescript

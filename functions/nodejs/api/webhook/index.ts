@@ -2,14 +2,28 @@ import { Request, Response } from '@google-cloud/functions-framework';
 import { ObjectId } from 'mongodb';
 import { connectToDatabase, getSecret } from '../../utils/mongodb';
 
-type AllowedAction = 'created' | 'updated' | 'closed';
+type AllowedAction = 'created' | 'updated' | 'closed' | 'changed';
 
+// Simplified format (backwards compatibility)
 interface WebhookPayload {
   action?: AllowedAction | string;
   data?: {
     transaction_id?: number;
     [key: string]: unknown;
   };
+  [key: string]: unknown;
+}
+
+// Real Poster webhook format
+interface PosterWebhookPayload {
+  account?: string;
+  object?: string;
+  object_id?: number;
+  action?: string;
+  time?: string;
+  verify?: string;
+  account_number?: string;
+  data?: string | object; // Can be JSON string!
   [key: string]: unknown;
 }
 
@@ -25,7 +39,7 @@ interface RawHookDocument {
   error_time: Date | null;
 }
 
-const ALLOWED_ACTIONS: AllowedAction[] = ['created', 'updated', 'closed'];
+const ALLOWED_ACTIONS: AllowedAction[] = ['created', 'updated', 'closed', 'changed'];
 
 function parsePayload(body: unknown): WebhookPayload {
   if (!body) {
@@ -49,6 +63,52 @@ function parsePayload(body: unknown): WebhookPayload {
   }
 
   return body as WebhookPayload;
+}
+
+/**
+ * Normalize Poster webhook format to standard format
+ * Handles both real Poster format and simplified format
+ */
+function normalizePosterPayload(raw: WebhookPayload | PosterWebhookPayload): WebhookPayload {
+  // Check if this is the real Poster format (has object_id field)
+  const posterPayload = raw as PosterWebhookPayload;
+
+  if (posterPayload.object_id !== undefined) {
+    // Real Poster format detected
+    console.log('📦 Detected real Poster webhook format');
+
+    // Parse nested data field if it's a JSON string
+    let parsedData: any = {};
+    if (typeof posterPayload.data === 'string') {
+      try {
+        parsedData = JSON.parse(posterPayload.data);
+        console.log('📝 Parsed nested JSON data string');
+      } catch (parseError) {
+        console.warn('⚠️ Failed to parse data string, using as-is');
+        parsedData = { raw: posterPayload.data };
+      }
+    } else if (posterPayload.data && typeof posterPayload.data === 'object') {
+      parsedData = posterPayload.data;
+    }
+
+    // Return normalized format
+    return {
+      action: posterPayload.action,
+      data: {
+        transaction_id: posterPayload.object_id,
+        ...parsedData,
+        // Preserve Poster-specific fields for audit
+        poster_account: posterPayload.account,
+        poster_object: posterPayload.object,
+        poster_time: posterPayload.time,
+        poster_verify: posterPayload.verify,
+        poster_account_number: posterPayload.account_number
+      }
+    };
+  }
+
+  // Already in simplified format, return as-is
+  return raw as WebhookPayload;
 }
 
 function snapshotBody(body: unknown): unknown {
@@ -147,7 +207,8 @@ export async function webhook(req: Request, res: Response) {
     let payload: WebhookPayload;
 
     try {
-      payload = parsePayload(req.body);
+      const rawPayload = parsePayload(req.body);
+      payload = normalizePosterPayload(rawPayload);
     } catch (parseError) {
       const details =
         parseError instanceof Error ? parseError.message : 'Invalid payload';
@@ -158,7 +219,14 @@ export async function webhook(req: Request, res: Response) {
       });
     }
 
-    const { action, data } = payload;
+    let { action, data } = payload;
+
+    // Map Poster's 'changed' action to 'closed' for consistency
+    const originalAction = action;
+    if (action === 'changed') {
+      action = 'closed';
+      console.log('🔄 Mapped action "changed" → "closed"');
+    }
 
     if (!action) {
       const details = 'Missing required field: action';
@@ -170,12 +238,12 @@ export async function webhook(req: Request, res: Response) {
       });
     }
 
-    if (!ALLOWED_ACTIONS.includes(action as AllowedAction)) {
-      const details = `Invalid action: ${action}. Allowed: ${ALLOWED_ACTIONS.join(
+    if (!ALLOWED_ACTIONS.includes(originalAction as AllowedAction)) {
+      const details = `Invalid action: ${originalAction}. Allowed: ${ALLOWED_ACTIONS.join(
         ', '
       )}`;
       await markRawError(details);
-      console.warn('⚠️ Invalid action:', action);
+      console.warn('⚠️ Invalid action:', originalAction);
       return res.status(400).json({
         error: 'Invalid payload',
         details
@@ -265,14 +333,15 @@ export async function webhook(req: Request, res: Response) {
 
     console.log('✅ Webhook processing completed:', {
       transaction_id: transactionId,
-      action,
+      action: originalAction,
+      mapped_action: action !== originalAction ? action : undefined,
       saved_to_transactions: savedToTransactions
     });
 
     return res.status(200).json({
       success: true,
       transaction_id: transactionId,
-      action,
+      action: originalAction,
       saved_to_transactions: savedToTransactions,
       raw_hook_id: rawHookId.toHexString()
     });

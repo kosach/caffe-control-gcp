@@ -187,14 +187,14 @@ describe('webhook', () => {
       { _id: insertedId },
       expect.objectContaining({
         $set: expect.objectContaining({
-          processing_error: 'Invalid action: deleted. Allowed: created, updated, closed'
+          processing_error: 'Invalid action: deleted. Allowed: created, updated, closed, changed'
         })
       })
     );
     expect(res.status).toHaveBeenCalledWith(400);
     expect(res.json).toHaveBeenCalledWith({
       error: 'Invalid payload',
-      details: 'Invalid action: deleted. Allowed: created, updated, closed'
+      details: 'Invalid action: deleted. Allowed: created, updated, closed, changed'
     });
   });
 
@@ -338,6 +338,174 @@ describe('webhook', () => {
     expect(res.json).toHaveBeenCalledWith({
       error: 'Processing failed',
       message: 'Unexpected error'
+    });
+  });
+
+  describe('Real Poster webhook format', () => {
+    test('handles real Poster format with changed action', async () => {
+      const req = buildRequest({
+        body: {
+          account: 'mykava6',
+          object: 'transaction',
+          object_id: 16776,
+          action: 'changed',
+          time: '1688722229',
+          verify: 'f6a209fccb87d7051d49bf3342c656ab',
+          account_number: '333226',
+          data: '{"status":"2","payed_sum":"5000"}'
+        }
+      });
+      const res = createMockResponse();
+
+      await webhook(req as any, res as any);
+
+      // Should save to transactions because 'changed' maps to 'closed'
+      expect(updateTransaction).toHaveBeenCalledWith(
+        { transaction_id: 16776 },
+        expect.objectContaining({
+          $set: expect.objectContaining({
+            transaction_id: 16776,
+            status: '2',
+            payed_sum: '5000',
+            poster_account: 'mykava6',
+            poster_object: 'transaction',
+            poster_time: '1688722229',
+            webhook_action: 'closed'
+          })
+        }),
+        { upsert: true }
+      );
+
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(res.json).toHaveBeenCalledWith({
+        success: true,
+        transaction_id: 16776,
+        action: 'changed', // Returns original action
+        saved_to_transactions: true,
+        raw_hook_id: insertedId.toHexString()
+      });
+    });
+
+    test('handles real Poster format with nested JSON string data', async () => {
+      const req = buildRequest({
+        body: {
+          object_id: 99999,
+          action: 'changed',
+          data: '{"transactions_history":{"type_history":"additem","time":1688722229115}}'
+        }
+      });
+      const res = createMockResponse();
+
+      await webhook(req as any, res as any);
+
+      expect(updateTransaction).toHaveBeenCalledWith(
+        { transaction_id: 99999 },
+        expect.objectContaining({
+          $set: expect.objectContaining({
+            transaction_id: 99999,
+            transactions_history: {
+              type_history: 'additem',
+              time: 1688722229115
+            }
+          })
+        }),
+        { upsert: true }
+      );
+
+      expect(res.status).toHaveBeenCalledWith(200);
+    });
+
+    test('handles real Poster format with data as object', async () => {
+      const req = buildRequest({
+        body: {
+          object_id: 88888,
+          action: 'changed',
+          data: {
+            status: '2',
+            amount: 1500
+          }
+        }
+      });
+      const res = createMockResponse();
+
+      await webhook(req as any, res as any);
+
+      expect(updateTransaction).toHaveBeenCalledWith(
+        { transaction_id: 88888 },
+        expect.objectContaining({
+          $set: expect.objectContaining({
+            transaction_id: 88888,
+            status: '2',
+            amount: 1500
+          })
+        }),
+        { upsert: true }
+      );
+
+      expect(res.status).toHaveBeenCalledWith(200);
+    });
+
+    test('handles real Poster format with invalid JSON string in data', async () => {
+      const req = buildRequest({
+        body: {
+          object_id: 77777,
+          action: 'changed',
+          data: '{invalid json}'
+        }
+      });
+      const res = createMockResponse();
+
+      await webhook(req as any, res as any);
+
+      // Should still save with raw data
+      expect(updateTransaction).toHaveBeenCalledWith(
+        { transaction_id: 77777 },
+        expect.objectContaining({
+          $set: expect.objectContaining({
+            transaction_id: 77777,
+            raw: '{invalid json}'
+          })
+        }),
+        { upsert: true }
+      );
+
+      expect(res.status).toHaveBeenCalledWith(200);
+    });
+
+    test('preserves backwards compatibility with simplified format', async () => {
+      const req = buildRequest({
+        body: {
+          action: 'closed',
+          data: {
+            transaction_id: 555,
+            status: '2'
+          }
+        }
+      });
+      const res = createMockResponse();
+
+      await webhook(req as any, res as any);
+
+      expect(updateTransaction).toHaveBeenCalledWith(
+        { transaction_id: 555 },
+        expect.objectContaining({
+          $set: expect.objectContaining({
+            transaction_id: 555,
+            status: '2',
+            webhook_action: 'closed'
+          })
+        }),
+        { upsert: true }
+      );
+
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(res.json).toHaveBeenCalledWith({
+        success: true,
+        transaction_id: 555,
+        action: 'closed',
+        saved_to_transactions: true,
+        raw_hook_id: insertedId.toHexString()
+      });
     });
   });
 });
