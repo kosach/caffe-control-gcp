@@ -17,13 +17,17 @@ Example of an incoming webhook:
 
 ```json
 {
-  "account": "api-demo",
-  "account_number": "813932",
+  "_id": {
+    "$oid": "64a7db37bc9daca9701a6f25"
+  },
+  "account": "mykava6",
   "object": "transaction",
-  "object_id": 1,
-  "action": "added",
-  "time": "1518794257",
-  "verify": "a23sk3d9123ka31sd3k5asd9123sad93"
+  "object_id": 16776,
+  "action": "changed",
+  "time": "1688722229",
+  "verify": "f6a209fccb87d7051d49bf3342c656ab",
+  "account_number": "333226",
+  "data": "{\"transactions_history\":{\"type_history\":\"additem\",\"time\":1688722229115,\"value\":483,\"value2\":78,\"value3\":429,\"value4\":0,\"value5\":null,\"value_text\":\"{\\\"price\\\":50,\\\"unit\\\":\\\"p\\\",\\\"nodiscount\\\":0,\\\"tax\\\":{\\\"id\\\":9,\\\"value\\\":0,\\\"type\\\":3,\\\"fiscal\\\":1},\\\"modificationData\\\":[{\\\"m\\\":21,\\\"a\\\":1}]}\",\"user_id\":6,\"spot_tablet_id\":1}}"
 }
 ```
 

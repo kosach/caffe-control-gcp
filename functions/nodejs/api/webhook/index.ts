@@ -2,10 +2,41 @@ import { Request, Response } from '@google-cloud/functions-framework';
 import { ObjectId } from 'mongodb';
 import { connectToDatabase, getSecret } from '../../utils/mongodb';
 
-type AllowedAction = 'created' | 'updated' | 'closed' | 'changed';
+/**
+ * Official Poster webhook actions
+ * @see https://dev.joinposter.com/docs/v3/web/webhooks
+ */
+type PosterAction = 'added' | 'changed' | 'removed' | 'transformed';
+type AllowedAction = 'created' | 'updated' | 'closed' | PosterAction;
 
-// Simplified format (backwards compatibility)
-interface WebhookPayload {
+/**
+ * Official Poster Webhook Format
+ * Based on Poster API documentation
+ * @see https://dev.joinposter.com/docs/v3/web/webhooks
+ */
+interface PosterWebhook {
+  /** Client account that created the event */
+  account: string;
+  /** Account number that created the event */
+  account_number: string;
+  /** Entity for which the webhook was received (e.g., "transaction", "product", "client") */
+  object: string;
+  /** Primary key of the object */
+  object_id: number;
+  /** Action performed: added, changed, removed, transformed */
+  action: PosterAction;
+  /** Webhook sending time in Unix timestamp */
+  time: string;
+  /** Request signature: md5(account;object;object_id;action;data;time;secret) */
+  verify: string;
+  /** Additional parameter for some entities (can be JSON string) */
+  data?: string | Record<string, unknown>;
+}
+
+/**
+ * Simplified format (backwards compatibility for testing)
+ */
+interface SimplifiedWebhookPayload {
   action?: AllowedAction | string;
   data?: {
     transaction_id?: number;
@@ -14,22 +45,15 @@ interface WebhookPayload {
   [key: string]: unknown;
 }
 
-// Real Poster webhook format
-interface PosterWebhookPayload {
-  account?: string;
-  object?: string;
-  object_id?: number;
-  action?: string;
-  time?: string;
-  verify?: string;
-  account_number?: string;
-  data?: string | object; // Can be JSON string!
-  [key: string]: unknown;
-}
+type WebhookPayload = PosterWebhook | SimplifiedWebhookPayload;
 
-interface RawHookDocument extends Record<string, unknown> {
+/**
+ * MongoDB document structure for poster-hooks-data collection
+ * Stores complete webhook body at root level + metadata
+ */
+interface RawHookDocument extends Partial<PosterWebhook> {
   _id?: ObjectId;
-  // Metadata fields
+  // Metadata separated from webhook data
   metadata: {
     received_at: Date;
     query_params: Record<string, unknown>;
@@ -39,10 +63,22 @@ interface RawHookDocument extends Record<string, unknown> {
     processing_error: string | null;
     error_time: Date | null;
   };
-  // All other fields are the raw webhook body spread at root level
+  // All webhook fields are spread at root level
+  [key: string]: unknown;
 }
 
-const ALLOWED_ACTIONS: AllowedAction[] = ['created', 'updated', 'closed', 'changed'];
+// Support both Poster actions and simplified actions
+const ALLOWED_ACTIONS: AllowedAction[] = [
+  // Poster official actions
+  'added',
+  'changed',
+  'removed',
+  'transformed',
+  // Simplified format actions (backwards compatibility)
+  'created',
+  'updated',
+  'closed'
+];
 
 function parsePayload(body: unknown): WebhookPayload {
   if (!body) {
@@ -69,49 +105,60 @@ function parsePayload(body: unknown): WebhookPayload {
 }
 
 /**
- * Normalize Poster webhook format to standard format
- * Handles both real Poster format and simplified format
+ * Type guard to check if payload is a Poster webhook
  */
-function normalizePosterPayload(raw: WebhookPayload | PosterWebhookPayload): WebhookPayload {
-  // Check if this is the real Poster format (has object_id field)
-  const posterPayload = raw as PosterWebhookPayload;
+function isPosterWebhook(payload: unknown): payload is PosterWebhook {
+  const p = payload as Partial<PosterWebhook>;
+  return (
+    typeof p === 'object' &&
+    p !== null &&
+    'object_id' in p &&
+    typeof p.object_id === 'number'
+  );
+}
 
-  if (posterPayload.object_id !== undefined) {
-    // Real Poster format detected
-    console.log('📦 Detected real Poster webhook format');
+/**
+ * Normalize Poster webhook format to standard format
+ * Handles both official Poster format and simplified format
+ */
+function normalizePosterPayload(raw: WebhookPayload): SimplifiedWebhookPayload {
+  // Check if this is the official Poster webhook format
+  if (isPosterWebhook(raw)) {
+    console.log('📦 Detected official Poster webhook format');
+    console.log(`   Object: ${raw.object}, ID: ${raw.object_id}, Action: ${raw.action}`);
 
     // Parse nested data field if it's a JSON string
-    let parsedData: any = {};
-    if (typeof posterPayload.data === 'string') {
+    let parsedData: Record<string, unknown> = {};
+    if (typeof raw.data === 'string') {
       try {
-        parsedData = JSON.parse(posterPayload.data);
+        parsedData = JSON.parse(raw.data) as Record<string, unknown>;
         console.log('📝 Parsed nested JSON data string');
       } catch (parseError) {
-        console.warn('⚠️ Failed to parse data string, using as-is');
-        parsedData = { raw: posterPayload.data };
+        console.warn('⚠️ Failed to parse data string, storing as raw');
+        parsedData = { raw_data_string: raw.data };
       }
-    } else if (posterPayload.data && typeof posterPayload.data === 'object') {
-      parsedData = posterPayload.data;
+    } else if (raw.data && typeof raw.data === 'object') {
+      parsedData = raw.data;
     }
 
-    // Return normalized format
+    // Return normalized format with all Poster fields preserved
     return {
-      action: posterPayload.action,
+      action: raw.action,
       data: {
-        transaction_id: posterPayload.object_id,
+        transaction_id: raw.object_id,
         ...parsedData,
-        // Preserve Poster-specific fields for audit
-        poster_account: posterPayload.account,
-        poster_object: posterPayload.object,
-        poster_time: posterPayload.time,
-        poster_verify: posterPayload.verify,
-        poster_account_number: posterPayload.account_number
+        // Preserve Poster-specific fields for audit trail
+        poster_account: raw.account,
+        poster_object: raw.object,
+        poster_time: raw.time,
+        poster_verify: raw.verify,
+        poster_account_number: raw.account_number
       }
     };
   }
 
   // Already in simplified format, return as-is
-  return raw as WebhookPayload;
+  return raw as SimplifiedWebhookPayload;
 }
 
 function snapshotBody(body: unknown): unknown {

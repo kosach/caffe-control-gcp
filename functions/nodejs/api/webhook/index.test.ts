@@ -187,14 +187,14 @@ describe('webhook', () => {
       { _id: insertedId },
       expect.objectContaining({
         $set: expect.objectContaining({
-          'metadata.processing_error': 'Invalid action: deleted. Allowed: created, updated, closed, changed'
+          'metadata.processing_error': expect.stringContaining('Invalid action: deleted')
         })
       })
     );
     expect(res.status).toHaveBeenCalledWith(400);
     expect(res.json).toHaveBeenCalledWith({
       error: 'Invalid payload',
-      details: 'Invalid action: deleted. Allowed: created, updated, closed, changed'
+      details: expect.stringContaining('Invalid action: deleted')
     });
   });
 
@@ -457,13 +457,13 @@ describe('webhook', () => {
 
       await webhook(req as any, res as any);
 
-      // Should still save with raw data
+      // Should still save with raw data string
       expect(updateTransaction).toHaveBeenCalledWith(
         { transaction_id: 77777 },
         expect.objectContaining({
           $set: expect.objectContaining({
             transaction_id: 77777,
-            raw: '{invalid json}'
+            raw_data_string: '{invalid json}'
           })
         }),
         { upsert: true }
