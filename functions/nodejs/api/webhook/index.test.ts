@@ -1,10 +1,13 @@
 import { ObjectId } from 'mongodb';
 import { webhook } from './index';
+import axios from 'axios';
 
 jest.mock('../../utils/mongodb', () => ({
   connectToDatabase: jest.fn(),
   getSecret: jest.fn()
 }));
+
+jest.mock('axios');
 
 import { connectToDatabase, getSecret } from '../../utils/mongodb';
 
@@ -24,6 +27,8 @@ function createMockResponse(): MockResponse {
   const status = jest.fn().mockReturnValue({ json });
   return { status, json };
 }
+
+const mockedAxios = axios as jest.Mocked<typeof axios>;
 
 describe('webhook', () => {
   const insertedId = new ObjectId('507f1f77bcf86cd799439011');
@@ -60,7 +65,41 @@ describe('webhook', () => {
       db: { collection }
     });
 
-    (getSecret as jest.Mock).mockResolvedValue('valid-key');
+    (getSecret as jest.Mock).mockImplementation((key: string) => {
+      if (key === 'poster-hook-api-key') return Promise.resolve('valid-key');
+      if (key === 'poster-token') return Promise.resolve('test-poster-token');
+      return Promise.resolve('mock-secret');
+    });
+
+    // Mock Poster API response
+    mockedAxios.get.mockResolvedValue({
+      data: {
+        response: {
+          transaction_id: '123',
+          account_id: '1',
+          user_id: '1',
+          category_id: '7',
+          type: '0',
+          amount: '-8137663',
+          balance: '545516997964',
+          date: '2024-08-31 09:20:22',
+          recipient_type: '0',
+          recipient_id: '0',
+          binding_type: '15',
+          binding_id: '400',
+          comment: 'Test transaction',
+          delete: '0',
+          account_name: 'Cash',
+          category_name: 'Sales',
+          currency_symbol: '$'
+        }
+      }
+    });
+
+    Object.defineProperty(axios, 'isAxiosError', {
+      value: jest.fn().mockReturnValue(false),
+      writable: true
+    });
   });
 
   function buildRequest(overrides: Partial<MockRequest> = {}): MockRequest {
@@ -201,10 +240,11 @@ describe('webhook', () => {
     });
   });
 
-  test('returns 400 when data missing', async () => {
+  test('returns 400 when object_id missing', async () => {
     const req = buildRequest({
       body: {
-        action: 'created'
+        action: 'added',
+        data: '{"status":"2"}'
       }
     });
     const res = createMockResponse();
@@ -215,45 +255,43 @@ describe('webhook', () => {
       { _id: insertedId },
       expect.objectContaining({
         $set: expect.objectContaining({
-          'metadata.processing_error': 'Missing required field: data'
+          'metadata.processing_error': 'Missing required field: object_id'
         })
       })
     );
     expect(res.status).toHaveBeenCalledWith(400);
     expect(res.json).toHaveBeenCalledWith({
       error: 'Invalid payload',
-      details: 'Missing required field: data'
+      details: 'Missing required field: object_id'
     });
   });
 
-  test('returns 400 when transaction_id invalid', async () => {
+  test('skips saving to transactions for added action', async () => {
     const req = buildRequest({
       body: {
-        action: 'created',
-        data: { transaction_id: 'abc' }
+        action: 'added',
+        object_id: 789,
+        data: '{"status":"1"}'
       }
     });
     const res = createMockResponse();
 
     await webhook(req as any, res as any);
 
-    expect(updateRaw).toHaveBeenCalledWith(
-      { _id: insertedId },
-      expect.objectContaining({
-        $set: expect.objectContaining({
-          'metadata.processing_error': 'Missing or invalid field: data.transaction_id'
-        })
-      })
-    );
-    expect(res.status).toHaveBeenCalledWith(400);
+    // Should NOT save to transactions for 'added' action
+    expect(updateTransaction).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(200);
     expect(res.json).toHaveBeenCalledWith({
-      error: 'Invalid payload',
-      details: 'Missing or invalid field: data.transaction_id'
+      success: true,
+      object_id: 789,
+      action: 'added',
+      saved_to_transactions: false,
+      raw_hook_id: insertedId.toHexString()
     });
   });
 
-  test('stores raw webhook and skips transactions for created action', async () => {
-    const req = buildRequest();
+  test('stores raw webhook and skips transactions for added action', async () => {
+    const req = buildRequest(); // Default action is 'added'
     const res = createMockResponse();
 
     await webhook(req as any, res as any);
@@ -272,45 +310,60 @@ describe('webhook', () => {
     expect(res.status).toHaveBeenCalledWith(200);
     expect(res.json).toHaveBeenCalledWith({
       success: true,
-      transaction_id: 123,
-      action: 'created',
+      object_id: 123,
+      action: 'added',
       saved_to_transactions: false,
       raw_hook_id: insertedId.toHexString()
     });
   });
 
-  test('upserts transaction when action is closed', async () => {
+  test('upserts transaction when action is changed', async () => {
     const req = buildRequest({
       body: {
-        action: 'closed',
-        data: {
-          transaction_id: 999,
-          status: '2',
-          payed_sum: '7500'
-        }
+        object_id: 999,
+        action: 'changed',
+        data: '{"status":"2","payed_sum":"7500"}'
       }
     });
     const res = createMockResponse();
 
     await webhook(req as any, res as any);
 
+    // Should call Poster API
+    expect(mockedAxios.get).toHaveBeenCalled();
+
+    // Should save ONLY Poster API data (no webhook metadata)
+    // Query uses Poster API's transaction_id (string) from response
     expect(updateTransaction).toHaveBeenCalledWith(
-      { transaction_id: 999 },
-      expect.objectContaining({
-        $set: expect.objectContaining({
-          status: '2',
-          payed_sum: '7500',
-          webhook_action: 'closed',
-          raw_hook_id: insertedId
-        })
-      }),
+      { transaction_id: '123' },  // String from Poster API response
+      {
+        $set: {
+          transaction_id: '123',
+          account_id: '1',
+          user_id: '1',
+          category_id: '7',
+          type: '0',
+          amount: '-8137663',
+          balance: '545516997964',
+          date: '2024-08-31 09:20:22',
+          recipient_type: '0',
+          recipient_id: '0',
+          binding_type: '15',
+          binding_id: '400',
+          comment: 'Test transaction',
+          delete: '0',
+          account_name: 'Cash',
+          category_name: 'Sales',
+          currency_symbol: '$'
+        }
+      },
       { upsert: true }
     );
     expect(res.status).toHaveBeenCalledWith(200);
     expect(res.json).toHaveBeenCalledWith({
       success: true,
-      transaction_id: 999,
-      action: 'closed',
+      object_id: 999,
+      action: 'changed',
       saved_to_transactions: true,
       raw_hook_id: insertedId.toHexString()
     });
@@ -321,8 +374,9 @@ describe('webhook', () => {
 
     const req = buildRequest({
       body: {
-        action: 'closed',
-        data: { transaction_id: 42 }
+        action: 'changed',
+        object_id: 42,
+        data: '{"status":"2"}'
       }
     });
     const res = createMockResponse();
@@ -362,28 +416,45 @@ describe('webhook', () => {
 
       await webhook(req as any, res as any);
 
-      // Should save to transactions because 'changed' maps to 'closed'
+      // Should fetch data from Poster API
+      expect(mockedAxios.get).toHaveBeenCalledWith(
+        expect.stringContaining('https://joinposter.com/api/finance.getTransaction'),
+        expect.objectContaining({ timeout: 10000 })
+      );
+
+      // Should save ONLY Poster API data (no webhook metadata)
+      // Query uses Poster API's transaction_id (string) from response
       expect(updateTransaction).toHaveBeenCalledWith(
-        { transaction_id: 16776 },
-        expect.objectContaining({
-          $set: expect.objectContaining({
-            transaction_id: 16776,
-            status: '2',
-            payed_sum: '5000',
-            poster_account: 'mykava6',
-            poster_object: 'transaction',
-            poster_time: '1688722229',
-            webhook_action: 'closed'
-          })
-        }),
+        { transaction_id: '123' },  // String from Poster API response
+        {
+          $set: {
+            transaction_id: '123',
+            account_id: '1',
+            user_id: '1',
+            category_id: '7',
+            type: '0',
+            amount: '-8137663',
+            balance: '545516997964',
+            date: '2024-08-31 09:20:22',
+            recipient_type: '0',
+            recipient_id: '0',
+            binding_type: '15',
+            binding_id: '400',
+            comment: 'Test transaction',
+            delete: '0',
+            account_name: 'Cash',
+            category_name: 'Sales',
+            currency_symbol: '$'
+          }
+        },
         { upsert: true }
       );
 
       expect(res.status).toHaveBeenCalledWith(200);
       expect(res.json).toHaveBeenCalledWith({
         success: true,
-        transaction_id: 16776,
-        action: 'changed', // Returns original action
+        object_id: 16776,
+        action: 'changed',
         saved_to_transactions: true,
         raw_hook_id: insertedId.toHexString()
       });
@@ -401,17 +472,31 @@ describe('webhook', () => {
 
       await webhook(req as any, res as any);
 
+      // Should save ONLY Poster API data
+      // Query uses Poster API's transaction_id (string) from response
       expect(updateTransaction).toHaveBeenCalledWith(
-        { transaction_id: 99999 },
-        expect.objectContaining({
-          $set: expect.objectContaining({
-            transaction_id: 99999,
-            transactions_history: {
-              type_history: 'additem',
-              time: 1688722229115
-            }
-          })
-        }),
+        { transaction_id: '123' },  // String from Poster API response
+        {
+          $set: {
+            transaction_id: '123',
+            account_id: '1',
+            user_id: '1',
+            category_id: '7',
+            type: '0',
+            amount: '-8137663',
+            balance: '545516997964',
+            date: '2024-08-31 09:20:22',
+            recipient_type: '0',
+            recipient_id: '0',
+            binding_type: '15',
+            binding_id: '400',
+            comment: 'Test transaction',
+            delete: '0',
+            account_name: 'Cash',
+            category_name: 'Sales',
+            currency_symbol: '$'
+          }
+        },
         { upsert: true }
       );
 
@@ -433,15 +518,31 @@ describe('webhook', () => {
 
       await webhook(req as any, res as any);
 
+      // Should save ONLY Poster API data
+      // Query uses Poster API's transaction_id (string) from response
       expect(updateTransaction).toHaveBeenCalledWith(
-        { transaction_id: 88888 },
-        expect.objectContaining({
-          $set: expect.objectContaining({
-            transaction_id: 88888,
-            status: '2',
-            amount: 1500
-          })
-        }),
+        { transaction_id: '123' },  // String from Poster API response
+        {
+          $set: {
+            transaction_id: '123',
+            account_id: '1',
+            user_id: '1',
+            category_id: '7',
+            type: '0',
+            amount: '-8137663',
+            balance: '545516997964',
+            date: '2024-08-31 09:20:22',
+            recipient_type: '0',
+            recipient_id: '0',
+            binding_type: '15',
+            binding_id: '400',
+            comment: 'Test transaction',
+            delete: '0',
+            account_name: 'Cash',
+            category_name: 'Sales',
+            currency_symbol: '$'
+          }
+        },
         { upsert: true }
       );
 
@@ -460,53 +561,85 @@ describe('webhook', () => {
 
       await webhook(req as any, res as any);
 
-      // Should still save with raw data string
+      // Should save ONLY Poster API data (ignoring invalid webhook data)
+      // Query uses Poster API's transaction_id (string) from response
       expect(updateTransaction).toHaveBeenCalledWith(
-        { transaction_id: 77777 },
-        expect.objectContaining({
-          $set: expect.objectContaining({
-            transaction_id: 77777,
-            raw_data_string: '{invalid json}'
-          })
-        }),
+        { transaction_id: '123' },  // String from Poster API response
+        {
+          $set: {
+            transaction_id: '123',
+            account_id: '1',
+            user_id: '1',
+            category_id: '7',
+            type: '0',
+            amount: '-8137663',
+            balance: '545516997964',
+            date: '2024-08-31 09:20:22',
+            recipient_type: '0',
+            recipient_id: '0',
+            binding_type: '15',
+            binding_id: '400',
+            comment: 'Test transaction',
+            delete: '0',
+            account_name: 'Cash',
+            category_name: 'Sales',
+            currency_symbol: '$'
+          }
+        },
         { upsert: true }
       );
 
       expect(res.status).toHaveBeenCalledWith(200);
     });
 
-    test('preserves backwards compatibility with simplified format', async () => {
+    test('handles removed action (only stores raw, not in transactions)', async () => {
       const req = buildRequest({
         body: {
-          action: 'closed',
-          data: {
-            transaction_id: 555,
-            status: '2'
-          }
+          object_id: 555,
+          action: 'removed',
+          data: '{"status":"3"}'
         }
       });
       const res = createMockResponse();
 
       await webhook(req as any, res as any);
 
-      expect(updateTransaction).toHaveBeenCalledWith(
-        { transaction_id: 555 },
-        expect.objectContaining({
-          $set: expect.objectContaining({
-            transaction_id: 555,
-            status: '2',
-            webhook_action: 'closed'
-          })
-        }),
-        { upsert: true }
-      );
+      // Should NOT save to transactions for 'removed' action
+      expect(updateTransaction).not.toHaveBeenCalled();
 
       expect(res.status).toHaveBeenCalledWith(200);
       expect(res.json).toHaveBeenCalledWith({
         success: true,
-        transaction_id: 555,
-        action: 'closed',
-        saved_to_transactions: true,
+        object_id: 555,
+        action: 'removed',
+        saved_to_transactions: false,
+        raw_hook_id: insertedId.toHexString()
+      });
+    });
+
+    test('handles Poster API failure gracefully', async () => {
+      mockedAxios.get.mockRejectedValueOnce(new Error('API timeout'));
+
+      const req = buildRequest({
+        body: {
+          object_id: 7777,
+          action: 'changed',
+          data: '{"status":"2"}'
+        }
+      });
+      const res = createMockResponse();
+
+      await webhook(req as any, res as any);
+
+      // Should NOT save to transactions when API fails
+      expect(updateTransaction).not.toHaveBeenCalled();
+
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(res.json).toHaveBeenCalledWith({
+        success: true,
+        object_id: 7777,
+        action: 'changed',
+        saved_to_transactions: false,
         raw_hook_id: insertedId.toHexString()
       });
     });

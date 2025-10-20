@@ -3,11 +3,12 @@
 **Status:** ✅ Completed and Deployed
 
 ## Overview
-Receives real-time transaction updates from Poster POS system. ALL webhooks are saved to `poster-hooks-data` for audit trail, but only `action === 'closed'` transactions are saved to `transactions` collection.
+Receives real-time transaction updates from Poster POS system. ALL webhooks are saved to `poster-hooks-data` for audit trail. When `action === 'changed'`, the function fetches full transaction data from Poster API and saves it to `transactions` collection.
 
 This approach provides:
-- Complete audit trail of all webhook events
-- Clean transactions collection with only completed transactions
+- Complete audit trail of all webhook events (raw webhooks)
+- Clean transactions collection with ONLY Poster API data
+- Full transaction details from official Poster API
 - Ability to replay failed webhooks
 - Analytics on all transaction lifecycle events
 
@@ -19,41 +20,43 @@ This approach provides:
        │ POST webhook
        │ ?api-key=xxx
        ▼
-┌─────────────────────────────────┐
-│  Cloud Function: webhook        │
-│                                 │
-│  1. ✅ Validate API key         │
-│  2. ✅ Save RAW (ALL actions)   │
-│  3. ✅ Validate payload         │
-│  4. ✅ Filter by action         │
-│  5. ✅ Mark as processed        │
-└─────────────────────────────────┘
+┌──────────────────────────────────────────────┐
+│  Cloud Function: webhook                     │
+│                                              │
+│  1. ✅ Validate API key                      │
+│  2. ✅ Save RAW webhook (ALL actions)        │
+│  3. ✅ Validate payload                      │
+│  4. ✅ Filter by action === 'changed'        │
+│  5. ✅ Fetch full data from Poster API       │
+│  6. ✅ Save ONLY Poster API data             │
+│  7. ✅ Mark RAW webhook as processed         │
+└──────────────────────────────────────────────┘
        │
        ├─────────────────────┬──────────────────────┐
        ▼                     ▼                      ▼
 ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐
-│ poster-hooks-data│  │   transactions   │  │   transactions   │
+│ poster-hooks-data│  │   Poster API     │  │   transactions   │
 │                  │  │                  │  │                  │
-│ action: created  │  │ (skipped)        │  │ (skipped)        │
+│ action: added    │  │ (not called)     │  │ (skipped)        │
 │ saved: ✅        │  │                  │  │                  │
 │ to_trans: false  │  │                  │  │                  │
 └──────────────────┘  └──────────────────┘  └──────────────────┘
 
-┌──────────────────┐  ┌──────────────────┐
-│ poster-hooks-data│  │   transactions   │
-│                  │  │                  │
-│ action: updated  │  │ (skipped)        │
-│ saved: ✅        │  │                  │
-│ to_trans: false  │  │                  │
-└──────────────────┘  └──────────────────┘
+┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐
+│ poster-hooks-data│  │   Poster API     │  │   transactions   │
+│                  │  │                  │  │                  │
+│ action: changed  │  │ GET transaction  │  │ ONLY Poster API  │
+│ saved: ✅        │  │ ✅ Called        │  │ data saved: ✅   │
+│ to_trans: true   │  │                  │  │                  │
+└──────────────────┘  └──────────────────┘  └──────────────────┘
 
-┌──────────────────┐  ┌──────────────────┐
-│ poster-hooks-data│  │   transactions   │
-│                  │  │                  │
-│ action: closed   │  │ saved: ✅        │
-│ saved: ✅        │  │                  │
-│ to_trans: true   │  │                  │
-└──────────────────┘  └──────────────────┘
+┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐
+│ poster-hooks-data│  │   Poster API     │  │   transactions   │
+│                  │  │                  │  │                  │
+│ action: removed  │  │ (not called)     │  │ (skipped)        │
+│ saved: ✅        │  │                  │  │                  │
+│ to_trans: false  │  │                  │  │                  │
+└──────────────────┘  └──────────────────┘  └──────────────────┘
 ```
 
 ## Endpoint
@@ -86,9 +89,9 @@ Save RAW data & continue processing
 
 ## Request Body
 
-The webhook supports **two payload formats**:
+The webhook accepts the **official Poster webhook format**:
 
-### Format 1: Real Poster Webhook Format (Primary)
+### Poster Webhook Format
 
 This is the actual format sent by Poster POS system.
 
@@ -106,48 +109,26 @@ This is the actual format sent by Poster POS system.
 ```
 
 **Key characteristics:**
-- `object_id` contains the transaction ID (mapped to `transaction_id` internally)
-- `action` is typically `"changed"` (mapped to `"closed"` for transaction storage)
-- `data` is a **JSON string** that needs to be parsed
+- `object_id` contains the transaction ID
+- `action` uses official Poster actions (see table below)
+- `data` can be a **JSON string** or object
 - Contains Poster-specific fields: `account`, `verify`, `time`, etc.
-
-### Format 2: Simplified Format (Backwards Compatibility)
-
-```json
-{
-  "action": "created" | "updated" | "closed",
-  "data": {
-    "transaction_id": 12345,
-    "date_start": "1634567890000",
-    "date_close": "1634567900000",
-    "status": "2",
-    "payed_sum": "7500",
-    "payed_card": "7500",
-    "payed_cash": "0",
-    "products": [...],
-    "history": [...],
-    ...
-  }
-}
-```
-
-**Key characteristics:**
-- Direct `transaction_id` field
-- Parsed `data` object (not JSON string)
-- Simpler structure for testing/debugging
 
 ### Supported Actions
 
-| Poster Action | Mapped To | Saved to Transactions? | Notes |
-|---------------|-----------|----------------------|-------|
-| `changed` | `closed` | ✅ YES | Poster's primary action for completed transactions |
-| `closed` | `closed` | ✅ YES | Simplified format |
-| `created` | `created` | ❌ NO | Transaction started |
-| `updated` | `updated` | ❌ NO | Transaction modified |
+Official Poster POS webhook actions:
 
-**Action Mapping Logic:**
-- Poster sends `action: "changed"` → Function maps to `"closed"` → Saves to `transactions` collection
-- This ensures Poster webhooks are properly stored
+| Poster Action | Saved to Transactions? | Poster API Called? | Notes |
+|---------------|------------------------|-------------------|-------|
+| `added` | ❌ NO | ❌ NO | Transaction created |
+| `changed` | ✅ YES | ✅ YES | Transaction modified/completed - **fetches full data** |
+| `removed` | ❌ NO | ❌ NO | Transaction deleted |
+| `transformed` | ❌ NO | ❌ NO | Transaction transformed |
+
+**Important:**
+- Only `action === 'changed'` triggers Poster API call and transaction storage
+- All actions are saved to `poster-hooks-data` for audit trail
+- Transaction is saved ONLY if Poster API returns data successfully
 
 ## Processing Logic (Step by Step)
 
@@ -172,13 +153,20 @@ if (!apiKey || apiKey !== validKey) {
 ### Step 3: Save RAW Data (CRITICAL - Always First)
 ```typescript
 const rawHookDocument = {
-  received_at: new Date(),
-  raw_body: req.body,
-  query_params: req.query,
-  processed: false,
-  saved_to_transactions: false,
-  processing_error: null,
-  error_time: null
+  // Spread webhook body at root level
+  ...(typeof req.body === 'object' && req.body !== null
+    ? req.body
+    : { raw_body_string: req.body }),
+  // Add metadata
+  metadata: {
+    received_at: new Date(),
+    query_params: req.query,
+    processed: false,
+    processed_at: null,
+    saved_to_transactions: false,
+    processing_error: null,
+    error_time: null
+  }
 };
 
 const result = await db.collection('poster-hooks-data')
@@ -191,104 +179,81 @@ rawHookId = result.insertedId;
 - Ensures no data loss even if validation fails
 - Provides audit trail for debugging
 - Allows replaying failed webhooks
-
-### Step 3.5: Normalize Payload Format
-```typescript
-// Parse the request body
-const rawPayload = parsePayload(req.body);
-
-// Detect and normalize Poster format to standard format
-payload = normalizePosterPayload(rawPayload);
-
-// Poster format detection:
-if (rawPayload.object_id !== undefined) {
-  // Real Poster webhook detected
-  console.log('📦 Detected real Poster webhook format');
-
-  // Parse nested JSON string in data field
-  let parsedData = {};
-  if (typeof rawPayload.data === 'string') {
-    parsedData = JSON.parse(rawPayload.data);
-  }
-
-  // Return normalized format
-  return {
-    action: rawPayload.action,
-    data: {
-      transaction_id: rawPayload.object_id,
-      ...parsedData,
-      // Preserve Poster fields for audit
-      poster_account: rawPayload.account,
-      poster_verify: rawPayload.verify,
-      ...
-    }
-  };
-}
-
-// Map 'changed' action to 'closed'
-if (action === 'changed') {
-  action = 'closed';
-  console.log('🔄 Mapped action "changed" → "closed"');
-}
-```
-
-**Normalization Process:**
-1. Detect format by checking for `object_id` field
-2. Parse nested JSON string in `data` field if present
-3. Map `object_id` → `transaction_id`
-4. Preserve Poster-specific fields for audit trail
-5. Map `action: "changed"` → `"closed"`
+- Webhook body stored at root level for easy querying
 
 ### Step 4: Validate Payload
 ```typescript
-// Validate action
-if (!action || !['created', 'updated', 'closed'].includes(action)) {
+// Validate action (official Poster actions only)
+const ALLOWED_ACTIONS = ['added', 'changed', 'removed', 'transformed'];
+if (!webhook.action || !ALLOWED_ACTIONS.includes(webhook.action)) {
   await updateRawHookError(rawHookId, 'Invalid action');
   return 400 "Invalid action"
 }
 
-// Validate data
-if (!data || !data.transaction_id) {
-  await updateRawHookError(rawHookId, 'Missing data');
+// Validate object_id
+const transactionId = webhook.object_id;
+if (!transactionId || typeof transactionId !== 'number') {
+  await updateRawHookError(rawHookId, 'Missing or invalid object_id');
   return 400 "Missing required fields"
 }
 ```
 
-### Step 5: Filter by Action (ONLY 'closed' → transactions)
+### Step 5: Filter by Action (ONLY 'changed' → Poster API → transactions)
 ```typescript
 let savedToTransactions = false;
 
-if (action === 'closed') {
-  // Save to transactions collection
-  await db.collection('transactions').updateOne(
-    { transaction_id: data.transaction_id },
-    {
-      $set: {
-        ...data,
-        webhook_received_at: new Date().toISOString(),
-        webhook_action: action,
-        raw_hook_id: rawHookId
-      }
-    },
-    { upsert: true }
-  );
-  
-  savedToTransactions = true;
+if (webhook.action === 'changed') {
+  // Fetch full transaction data from Poster API
+  const posterToken = await getSecret('poster-token');
+  const posterApiData = await fetchPosterTransaction(transactionId, posterToken);
+
+  // Store ONLY Poster API transaction data if available
+  if (posterApiData) {
+    await db.collection('transactions').updateOne(
+      { transaction_id: transactionId },
+      { $set: posterApiData },  // ONLY Poster API data
+      { upsert: true }
+    );
+    savedToTransactions = true;
+    console.log('✅ Transaction saved:', transactionId);
+  } else {
+    console.warn('⚠️ Poster API data not available, skipping transaction save');
+  }
 } else {
   // Skip transactions - only RAW saved
   savedToTransactions = false;
 }
 ```
 
-### Step 6: Mark as Processed
+### Step 6: Fetch Full Data from Poster API
+```typescript
+async function fetchPosterTransaction(transactionId, posterToken) {
+  try {
+    const url = `https://joinposter.com/api/finance.getTransaction?token=${posterToken}&transaction_id=${transactionId}`;
+
+    const response = await axios.get(url, { timeout: 10000 });
+
+    if (response.data && response.data.response) {
+      return response.data.response;  // Full transaction data
+    }
+
+    return null;  // No data available
+  } catch (error) {
+    console.error('❌ Poster API request failed:', error);
+    return null;
+  }
+}
+```
+
+### Step 7: Mark as Processed
 ```typescript
 await db.collection('poster-hooks-data').updateOne(
   { _id: rawHookId },
   {
     $set: {
-      processed: true,
-      saved_to_transactions: savedToTransactions,
-      processed_at: new Date()
+      'metadata.processed': true,
+      'metadata.saved_to_transactions': savedToTransactions,
+      'metadata.processed_at': new Date()
     }
   }
 );
@@ -296,25 +261,36 @@ await db.collection('poster-hooks-data').updateOne(
 
 ## Response Examples
 
-### Success: Closed Transaction (200)
+### Success: Changed Transaction (200)
 ```json
 {
   "success": true,
-  "transaction_id": 12345,
-  "action": "closed",
+  "object_id": 16776,
+  "action": "changed",
   "saved_to_transactions": true,
   "raw_hook_id": "507f1f77bcf86cd799439011"
 }
 ```
 
-### Success: Created/Updated Transaction (200)
+### Success: Changed Transaction (Poster API Failed) (200)
 ```json
 {
   "success": true,
-  "transaction_id": 12345,
-  "action": "created",
+  "object_id": 16776,
+  "action": "changed",
   "saved_to_transactions": false,
   "raw_hook_id": "507f1f77bcf86cd799439012"
+}
+```
+
+### Success: Added/Removed Transaction (200)
+```json
+{
+  "success": true,
+  "object_id": 12345,
+  "action": "added",
+  "saved_to_transactions": false,
+  "raw_hook_id": "507f1f77bcf86cd799439013"
 }
 ```
 
@@ -329,7 +305,7 @@ await db.collection('poster-hooks-data').updateOne(
 ```json
 {
   "error": "Invalid payload",
-  "details": "Invalid action: deleted. Allowed: created, updated, closed"
+  "details": "Invalid action: deleted. Allowed: added, changed, removed, transformed"
 }
 ```
 
@@ -347,46 +323,55 @@ await db.collection('poster-hooks-data').updateOne(
 
 **Purpose:** Audit trail, debugging, replay capability
 
-#### Document Structure
+#### Document Structure (Webhook body at root + metadata)
 ```javascript
 {
   _id: ObjectId("507f1f77bcf86cd799439011"),
-  received_at: ISODate("2025-10-18T10:00:00.000Z"),
-  raw_body: {
-    action: "created",
-    data: {
-      transaction_id: 12345,
-      status: "1",
-      payed_sum: "7500",
-      ...
-    }
-  },
-  query_params: {
-    "api-key": "xxx"  // Stored for debugging
-  },
-  processed: true,
-  saved_to_transactions: false,  // false for created/updated
-  processed_at: ISODate("2025-10-18T10:00:01.000Z"),
-  processing_error: null,  // or error message if failed
-  error_time: null  // or timestamp if failed
+  // Webhook body fields spread at root level
+  account: "mykava6",
+  object: "transaction",
+  object_id: 12345,
+  action: "added",
+  time: "1688722229",
+  verify: "f6a209fccb87d7051d49bf3342c656ab",
+  account_number: "333226",
+  data: "{\"status\":\"1\"}",
+  // Metadata in separate field
+  metadata: {
+    received_at: ISODate("2025-10-18T10:00:00.000Z"),
+    query_params: {
+      "api-key": "xxx"  // Stored for debugging
+    },
+    processed: true,
+    saved_to_transactions: false,  // false for added/removed
+    processed_at: ISODate("2025-10-18T10:00:01.000Z"),
+    processing_error: null,  // or error message if failed
+    error_time: null  // or timestamp if failed
+  }
 }
 ```
 
-#### Example: Closed Transaction (saved to both collections)
+#### Example: Changed Transaction (saved to both collections)
 ```javascript
 {
   _id: ObjectId("507f1f77bcf86cd799439022"),
-  received_at: ISODate("2025-10-18T10:05:00.000Z"),
-  raw_body: {
-    action: "closed",
-    data: { transaction_id: 12345, ... }
-  },
-  query_params: { "api-key": "xxx" },
-  processed: true,
-  saved_to_transactions: true,  // ✅ true for closed!
-  processed_at: ISODate("2025-10-18T10:05:01.000Z"),
-  processing_error: null,
-  error_time: null
+  account: "mykava6",
+  object: "transaction",
+  object_id: 16776,
+  action: "changed",
+  time: "1688722229",
+  verify: "f6a209fccb87d7051d49bf3342c656ab",
+  account_number: "333226",
+  data: "{\"status\":\"2\",\"payed_sum\":\"5000\"}",
+  metadata: {
+    received_at: ISODate("2025-10-18T10:05:00.000Z"),
+    query_params: { "api-key": "xxx" },
+    processed: true,
+    saved_to_transactions: true,  // ✅ true for changed!
+    processed_at: ISODate("2025-10-18T10:05:01.000Z"),
+    processing_error: null,
+    error_time: null
+  }
 }
 ```
 
@@ -394,70 +379,76 @@ await db.collection('poster-hooks-data').updateOne(
 ```javascript
 {
   _id: ObjectId("507f1f77bcf86cd799439033"),
-  received_at: ISODate("2025-10-18T10:10:00.000Z"),
-  raw_body: {
-    action: "deleted",  // Invalid action
-    data: { transaction_id: 999 }
-  },
-  query_params: { "api-key": "xxx" },
-  processed: false,
-  saved_to_transactions: false,
-  processed_at: null,
-  processing_error: "Invalid action: deleted. Allowed: created, updated, closed",
-  error_time: ISODate("2025-10-18T10:10:00.500Z")
+  account: "test_account",
+  object: "transaction",
+  object_id: 999,
+  action: "deleted",  // Invalid action
+  time: "1688722300",
+  metadata: {
+    received_at: ISODate("2025-10-18T10:10:00.000Z"),
+    query_params: { "api-key": "xxx" },
+    processed: false,
+    saved_to_transactions: false,
+    processed_at: null,
+    processing_error: "Invalid action: deleted. Allowed: added, changed, removed, transformed",
+    error_time: ISODate("2025-10-18T10:10:00.500Z")
+  }
 }
 ```
 
-### Collection 2: transactions (ONLY closed)
+### Collection 2: transactions (ONLY Poster API data)
 
-**Purpose:** Clean collection of completed transactions
+**Purpose:** Clean collection of completed transactions with full Poster data
 
-#### Document Structure
+**IMPORTANT:** This collection contains ONLY data from Poster API - NO webhook metadata!
+
+#### Document Structure (ONLY Poster API fields)
 ```javascript
 {
   _id: ObjectId("507f1f77bcf86cd799439044"),
-  transaction_id: 12345,  // Primary key from Poster
-  date_start: "1634567890000",
-  date_close: "1634567900000",
-  date_close_date: "2021-10-18 10:00:00",
-  status: "2",  // Closed status
-  payed_sum: "7500",
-  payed_card: "7500",
-  payed_cash: "0",
-  name: "Андрій",
-  user_id: "4",
-  products: [
-    {
-      product_id: "402",
-      product_price: "7500",
-      ...
-    }
-  ],
-  history: [
-    {
-      history_id: "1225",
-      type_history: "open",
-      ...
-    }
-  ],
-  webhook_received_at: "2025-10-18T10:05:00.000Z",
-  webhook_action: "closed",
-  raw_hook_id: ObjectId("507f1f77bcf86cd799439022")  // Reference to RAW
+  // ALL fields below are from Poster API response
+  transaction_id: "16776",  // String from Poster API
+  account_id: "1",
+  user_id: "1",
+  category_id: "7",
+  type: "0",  // 0 = expense, 1 = income
+  amount: "-8137663",  // In kopecks (cents)
+  balance: "545516997964",  // Account balance in kopecks
+  date: "2024-08-31 09:20:22",
+  recipient_type: "0",
+  recipient_id: "0",
+  binding_type: "15",  // Related entity type
+  binding_id: "400",  // Related entity ID
+  comment: "Transaction comment",
+  delete: "0",  // 0 = not deleted, 1 = deleted
+  account_name: "Cash at location",
+  category_name: "Sales",
+  currency_symbol: "$"
+  // Note: NO webhook_received_at, NO webhook_action, NO raw_hook_id
+  // This is PURE Poster API data!
 }
 ```
 
+**Key Points:**
+- All fields are strings (as returned by Poster API)
+- `transaction_id` is the primary key for upserts
+- NO webhook metadata - check `poster-hooks-data` for webhook details
+- To link back to webhook: query `poster-hooks-data` by `object_id`
+
 ## Error Handling Matrix
 
-| Scenario | poster-hooks-data | transactions | Response | Notes |
-|----------|-------------------|--------------|----------|-------|
-| ❌ Invalid API key | NOT saved | NOT saved | 401 | Auth fails before RAW save |
-| ✅ Valid, action=created | ✅ Saved | NOT saved | 200 | RAW only |
-| ✅ Valid, action=updated | ✅ Saved | NOT saved | 200 | RAW only |
-| ✅ Valid, action=closed | ✅ Saved | ✅ Saved | 200 | Both collections |
-| ⚠️ Invalid action | ✅ Saved + error | NOT saved | 400 | Error recorded |
-| ⚠️ Missing data | ✅ Saved + error | NOT saved | 400 | Error recorded |
-| ❌ DB error (RAW) | NOT saved | NOT saved | 500 | Critical failure |
-| ❌ DB error (after RAW) | ✅ Saved + error | NOT saved | 500 | RAW preserved |
+| Scenario | poster-hooks-data | Poster API | transactions | Response | Notes |
+|----------|-------------------|------------|--------------|----------|-------|
+| ❌ Invalid API key | NOT saved | NOT called | NOT saved | 401 | Auth fails before RAW save |
+| ✅ Valid, action=added | ✅ Saved | NOT called | NOT saved | 200 | RAW only |
+| ✅ Valid, action=removed | ✅ Saved | NOT called | NOT saved | 200 | RAW only |
+| ✅ Valid, action=changed, API success | ✅ Saved | ✅ Called | ✅ Saved | 200 | Full flow |
+| ✅ Valid, action=changed, API fails | ✅ Saved | ⚠️ Failed | NOT saved | 200 | RAW saved, transaction skipped |
+| ✅ Valid, action=changed, API empty | ✅ Saved | ✅ Called | NOT saved | 200 | API returned no data |
+| ⚠️ Invalid action | ✅ Saved + error | NOT called | NOT saved | 400 | Error recorded |
+| ⚠️ Missing object_id | ✅ Saved + error | NOT called | NOT saved | 400 | Error recorded |
+| ❌ DB error (RAW) | NOT saved | NOT called | NOT saved | 500 | Critical failure |
+| ❌ DB error (after RAW) | ✅ Saved + error | May be called | NOT saved | 500 | RAW preserved |
 
 ## Local Testing
 
@@ -475,56 +466,61 @@ npx @google-cloud/functions-framework \
 
 ### Test Scenarios
 
-#### Test 1: Valid Closed Transaction ✅
+#### Test 1: Valid Changed Transaction ✅
 ```bash
-curl -X POST "http://localhost:8080?api-key=caffe-secure-2025-prod-key-x7k9m" \
+curl -X POST "http://localhost:8080?api-key=poster-webhook-secure-key-2025-p8mz3x" \
   -H "Content-Type: application/json" \
   -d '{
-    "action": "closed",
-    "data": {
-      "transaction_id": 999,
-      "status": "2",
-      "payed_sum": "7500"
-    }
+    "account": "test_cafe",
+    "object": "transaction",
+    "object_id": 999,
+    "action": "changed",
+    "time": "1729500000",
+    "verify": "test_hash",
+    "account_number": "12345",
+    "data": "{\"status\":\"2\",\"payed_sum\":\"7500\"}"
   }'
 
 # Expected Response:
 {
   "success": true,
-  "transaction_id": 999,
-  "action": "closed",
-  "saved_to_transactions": true,
+  "object_id": 999,
+  "action": "changed",
+  "saved_to_transactions": true,  // true if Poster API succeeds
   "raw_hook_id": "..."
 }
 
 # Database Check:
-# - poster-hooks-data: 1 document (saved_to_transactions: true)
-# - transactions: 1 document
+# - poster-hooks-data: 1 document (metadata.saved_to_transactions: true)
+# - transactions: 1 document (ONLY Poster API data)
 ```
 
-#### Test 2: Valid Created Transaction ✅
+#### Test 2: Valid Added Transaction ✅
 ```bash
-curl -X POST "http://localhost:8080?api-key=caffe-secure-2025-prod-key-x7k9m" \
+curl -X POST "http://localhost:8080?api-key=poster-webhook-secure-key-2025-p8mz3x" \
   -H "Content-Type: application/json" \
   -d '{
-    "action": "created",
-    "data": {
-      "transaction_id": 888,
-      "status": "1"
-    }
+    "account": "test_cafe",
+    "object": "transaction",
+    "object_id": 888,
+    "action": "added",
+    "time": "1729500000",
+    "verify": "test_hash",
+    "account_number": "12345",
+    "data": "{\"status\":\"1\"}"
   }'
 
 # Expected Response:
 {
   "success": true,
-  "transaction_id": 888,
-  "action": "created",
+  "object_id": 888,
+  "action": "added",
   "saved_to_transactions": false,
   "raw_hook_id": "..."
 }
 
 # Database Check:
-# - poster-hooks-data: 1 document (saved_to_transactions: false)
+# - poster-hooks-data: 1 document (metadata.saved_to_transactions: false)
 # - transactions: 0 documents (not saved)
 ```
 
@@ -562,40 +558,46 @@ curl -X POST "http://localhost:8080" \
 
 #### Test 5: Invalid Action ⚠️
 ```bash
-curl -X POST "http://localhost:8080?api-key=caffe-secure-2025-prod-key-x7k9m" \
+curl -X POST "http://localhost:8080?api-key=poster-webhook-secure-key-2025-p8mz3x" \
   -H "Content-Type: application/json" \
   -d '{
+    "account": "test",
+    "object": "transaction",
+    "object_id": 444,
     "action": "deleted",
-    "data": {
-      "transaction_id": 444
-    }
+    "time": "1729500000"
   }'
 
 # Expected Response:
 {
   "error": "Invalid payload",
-  "details": "Invalid action: deleted. Allowed: created, updated, closed"
+  "details": "Invalid action: deleted. Allowed: added, changed, removed, transformed"
 }
 
 # Database Check:
-# - poster-hooks-data: 1 document with processing_error
+# - poster-hooks-data: 1 document with metadata.processing_error
 # - transactions: 0 documents
 ```
 
-#### Test 6: Missing Data ⚠️
+#### Test 6: Missing object_id ⚠️
 ```bash
-curl -X POST "http://localhost:8080?api-key=caffe-secure-2025-prod-key-x7k9m" \
+curl -X POST "http://localhost:8080?api-key=poster-webhook-secure-key-2025-p8mz3x" \
   -H "Content-Type: application/json" \
-  -d '{"action":"closed"}'
+  -d '{
+    "account": "test",
+    "object": "transaction",
+    "action": "changed",
+    "time": "1729500000"
+  }'
 
 # Expected Response:
 {
   "error": "Invalid payload",
-  "details": "Missing required field: data"
+  "details": "Missing required field: object_id"
 }
 
 # Database Check:
-# - poster-hooks-data: 1 document with processing_error
+# - poster-hooks-data: 1 document with metadata.processing_error
 # - transactions: 0 documents
 ```
 
@@ -653,62 +655,63 @@ gcloud functions logs read webhook --gen2 --region=europe-west1 --limit=50 --for
 ### Get All Webhooks for Transaction
 ```javascript
 db['poster-hooks-data'].find({
-  'raw_body.data.transaction_id': 12345
-}).sort({ received_at: 1 })
+  object_id: 16776
+}).sort({ 'metadata.received_at': 1 })
 
-// Shows lifecycle: created → updated → updated → closed
+// Shows lifecycle: added → changed → changed → etc.
 ```
 
-### Get Only Saved Transactions (closed)
+### Get Only Saved Transactions (changed with successful API call)
 ```javascript
 db['poster-hooks-data'].find({
-  saved_to_transactions: true
+  'metadata.saved_to_transactions': true
 })
 ```
 
 ### Get Failed Webhooks
 ```javascript
 db['poster-hooks-data'].find({
-  processing_error: { $ne: null }
+  'metadata.processing_error': { $ne: null }
 })
 ```
 
 ### Get Webhooks by Action
 ```javascript
-// Only created
+// Only added
 db['poster-hooks-data'].find({
-  'raw_body.action': 'created'
+  action: 'added'
 })
 
-// Only closed
+// Only changed
 db['poster-hooks-data'].find({
-  'raw_body.action': 'closed'
+  action: 'changed'
 })
 ```
 
-### Link RAW to Transaction
+### Link RAW Webhook to Transaction
 ```javascript
-// Get transaction
-const transaction = db.transactions.findOne({ 
-  transaction_id: 12345 
+// Get transaction from Poster API data
+const transaction = db.transactions.findOne({
+  transaction_id: '16776'  // Note: string from Poster API
 });
 
-// Get corresponding RAW webhook
-const rawHook = db['poster-hooks-data'].findOne({ 
-  _id: transaction.raw_hook_id 
+// Find corresponding RAW webhook by object_id
+const rawHook = db['poster-hooks-data'].findOne({
+  object_id: parseInt(transaction.transaction_id),
+  action: 'changed'
 });
 
-// See full webhook that created this transaction
-console.log(rawHook.raw_body);
+// See full webhook that triggered this transaction
+console.log(rawHook);
 ```
 
 ### Replay Failed Webhooks
 ```javascript
-// Find failed webhooks that should be in transactions
-const failedClosed = db['poster-hooks-data'].find({
-  'raw_body.action': 'closed',
-  saved_to_transactions: false,
-  processing_error: { $ne: null }
+// Find webhooks with changed action that didn't save to transactions
+const failedChanged = db['poster-hooks-data'].find({
+  action: 'changed',
+  'metadata.saved_to_transactions': false,
+  'metadata.processing_error': { $ne: null }
 });
 
 // Could be replayed manually or via script
@@ -763,67 +766,65 @@ Poster → Realm Endpoint → poster-hooks-data (RAW)
 - ✅ Made extra API call to Poster for full data
 - ❌ 3-step process with delays
 - ❌ Realm Triggers (deprecated technology)
-- ❌ Extra API call overhead
+- ❌ Separate function execution with potential failures
 
-### New System (GCP Cloud Functions)
+### New System (GCP Cloud Functions) ✅ CURRENT
 ```
 Poster → Cloud Function → poster-hooks-data (RAW)
                               ↓
                          (same function)
                               ↓
-                    Filter: action === 'closed'
+                    Filter: action === 'changed'
+                              ↓
+                    Poster API Call (finance.getTransaction)
+                              ↓
+                    Store ONLY Poster API data
                               ↓
                          transactions
 ```
 
 **Characteristics:**
-- ✅ Saves all webhooks to poster-hooks-data
-- ✅ Filters by action === 'closed'
-- ✅ Single function, fast execution
-- ✅ Modern, supported technology
-- ❌ No extra API call (assumes webhook has full data)
+- ✅ Saves all webhooks to poster-hooks-data (webhook body at root + metadata)
+- ✅ Filters by action === 'changed' (official Poster action)
+- ✅ **ALWAYS calls Poster API** for full transaction data
+- ✅ Stores ONLY Poster API data (clean, no webhook metadata)
+- ✅ Single function, atomic execution
+- ✅ Modern, supported GCP technology
+- ✅ Graceful handling of Poster API failures
 
-### Key Difference: Poster API Call
+### Key Improvements
 
-**Old:** Webhook contained minimal data (object_id, action)
-```json
-{
-  "object": "transaction",
-  "action": "closed",
-  "object_id": 12345
-}
-```
-→ Required API call to get full transaction
+**1. Atomic Execution**
+- Single function handles everything (no separate triggers)
+- RAW webhook saved first (no data loss)
+- Transaction saved only if Poster API succeeds
 
-**New:** Webhook should contain full data
-```json
-{
-  "action": "closed",
-  "data": {
-    "transaction_id": 12345,
-    "status": "2",
-    "payed_sum": "7500",
-    "products": [...],
-    ...
+**2. Clean Data Model**
+- `poster-hooks-data`: Full webhook at root + metadata
+- `transactions`: ONLY Poster API data (no mixing)
+
+**3. Poster API Integration**
+```typescript
+// CURRENT IMPLEMENTATION
+if (webhook.action === 'changed') {
+  // Fetch full data from Poster API
+  const posterApiData = await fetchPosterTransaction(transactionId, posterToken);
+
+  // Store ONLY Poster API data
+  if (posterApiData) {
+    await db.collection('transactions').updateOne(
+      { transaction_id: transactionId },
+      { $set: posterApiData },  // Pure Poster data
+      { upsert: true }
+    );
   }
 }
 ```
-→ No API call needed
 
-**If Poster webhook doesn't include full data, add this to Step 6:**
-```typescript
-if (action === 'closed') {
-  // Fetch full data from Poster API
-  const fullData = await axios.get(
-    `https://joinposter.com/api/dash.getTransaction?` +
-    `token=${posterToken}&transaction_id=${transactionId}` +
-    `&include_products=true&include_history=true`
-  );
-  
-  // Save full data to transactions
-  await db.collection('transactions').updateOne(...);
-}
-```
+**4. Official Poster Actions**
+- Uses official Poster webhook actions: `added`, `changed`, `removed`, `transformed`
+- No custom mapping or simplified formats
+- Fully compatible with Poster POS system
 
 ## Troubleshooting
 
@@ -842,27 +843,31 @@ if (action === 'closed') {
 
 ### Issue: RAW saved but not in transactions
 **Check:**
-1. Is action === 'closed'? (Only closed saved to transactions)
-2. Check poster-hooks-data for processing_error
-3. Verify transaction_id is valid number
-4. Check Cloud Functions logs
+1. Is action === 'changed'? (Only changed triggers Poster API and saves)
+2. Check poster-hooks-data for metadata.processing_error
+3. Check Cloud Functions logs for Poster API errors
+4. Verify Poster API token is valid
+5. Check if Poster API returned empty response
 
 ### Issue: Duplicate transactions
 **Not possible:** Function uses `upsert` with transaction_id as key
 
 ### Issue: Missing transaction data
 **Solutions:**
-1. Check if Poster webhook includes full data
-2. May need to add Poster API call (see Migration section)
-3. Verify Poster webhook configuration includes required fields
+1. Verify Poster API token is correct (stored in `poster-token` secret)
+2. Check Cloud Functions logs for API call failures
+3. Test Poster API directly: `https://joinposter.com/api/finance.getTransaction?token=...&transaction_id=...`
+4. Ensure transaction exists in Poster POS system
 
 ## Performance Considerations
 
-- **Average execution time:** < 1 second
+- **Average execution time:** 1-2 seconds (includes Poster API call)
 - **Memory usage:** 256M sufficient
 - **Timeout:** 60s (plenty of buffer)
 - **Cold start:** ~2 seconds first request
-- **Warm start:** < 500ms
+- **Warm start:** < 1 second
+- **Poster API call:** ~200-500ms (when action === 'changed')
+- **Dependencies:** axios bundled with function
 
 ## Security
 
@@ -881,6 +886,12 @@ if (action === 'closed') {
 
 ---
 
-**Last Updated:** October 18, 2025
-**Version:** 1.0.0
+**Last Updated:** October 20, 2025
+**Version:** 2.0.0
 **Author:** Migration from MongoDB Realm to GCP Cloud Functions
+**Changes in v2.0:**
+- Added Poster API integration (finance.getTransaction)
+- Updated to official Poster webhook actions
+- Changed database structure (webhook body at root + metadata)
+- Transactions collection now contains ONLY Poster API data
+- Removed backwards compatibility with simplified format

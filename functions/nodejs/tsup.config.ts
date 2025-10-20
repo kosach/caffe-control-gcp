@@ -17,7 +17,7 @@ export default defineConfig({
   sourcemap: false,
   minify: false,
   external: ['@google-cloud/functions-framework'],
-  noExternal: ['mongodb', '@google-cloud/secret-manager'],
+  noExternal: ['mongodb', '@google-cloud/secret-manager', 'axios'],
   onSuccess: async () => {
     // Create separate directories for each function
     functions.forEach(functionName => {

@@ -1,5 +1,6 @@
 import { Request, Response } from '@google-cloud/functions-framework';
 import { ObjectId } from 'mongodb';
+import axios from 'axios';
 import { connectToDatabase, getSecret } from '../../utils/mongodb';
 
 /**
@@ -33,6 +34,33 @@ interface TransactionData {
   status?: string;
   payed_sum?: string;
   [key: string]: unknown; // Allow additional fields
+}
+
+/**
+ * Poster API response for finance.getTransaction
+ * @see https://dev.joinposter.com/docs/v3/web/finance/getTransaction
+ */
+interface PosterTransactionResponse {
+  response: {
+    transaction_id: string;
+    account_id: string;
+    user_id: string;
+    category_id: string;
+    type: string;
+    amount: string;
+    balance: string;
+    date: string;
+    recipient_type: string;
+    recipient_id: string;
+    binding_type: string;
+    binding_id: string;
+    comment: string;
+    delete: string;
+    account_name: string;
+    category_name: string;
+    currency_symbol: string;
+    [key: string]: unknown;
+  };
 }
 
 /**
@@ -81,6 +109,43 @@ interface RawHookDocument extends Partial<PosterWebhook> {
 
 /** Official Poster webhook actions */
 const ALLOWED_ACTIONS: PosterAction[] = ['added', 'changed', 'removed', 'transformed'];
+
+/**
+ * Fetch full transaction data from Poster API
+ */
+async function fetchPosterTransaction(
+  transactionId: number,
+  posterToken: string
+): Promise<PosterTransactionResponse['response'] | null> {
+  try {
+    const url = `https://joinposter.com/api/finance.getTransaction?token=${posterToken}&transaction_id=${transactionId}`;
+
+    console.log('🔍 Fetching transaction from Poster API:', transactionId);
+
+    const response = await axios.get<PosterTransactionResponse>(url, {
+      timeout: 10000 // 10 second timeout
+    });
+
+    if (response.data && response.data.response) {
+      console.log('✅ Poster API data fetched successfully');
+      return response.data.response;
+    }
+
+    console.warn('⚠️ Poster API returned empty response');
+    return null;
+  } catch (error) {
+    if (axios.isAxiosError(error)) {
+      console.error('❌ Poster API request failed:', {
+        status: error.response?.status,
+        statusText: error.response?.statusText,
+        data: error.response?.data
+      });
+    } else {
+      console.error('❌ Poster API request failed:', error);
+    }
+    return null;
+  }
+}
 
 function parsePayload(body: unknown): PosterWebhook {
   if (!body) {
@@ -296,28 +361,23 @@ export async function webhook(req: Request, res: Response) {
 
     if (webhook.action === 'changed') {
       try {
-        await transactionsCollection.updateOne(
-          { transaction_id: transactionId },
-          {
-            $set: {
-              transaction_id: transactionId,
-              ...parsedData,
-              // Preserve all Poster webhook fields
-              poster_account: webhook.account,
-              poster_account_number: webhook.account_number,
-              poster_object: webhook.object,
-              poster_time: webhook.time,
-              poster_verify: webhook.verify,
-              // Add webhook metadata
-              webhook_received_at: timestampIso,
-              webhook_action: webhook.action,
-              raw_hook_id: rawHookId
-            }
-          },
-          { upsert: true }
-        );
-        savedToTransactions = true;
-        console.log('✅ Transaction saved:', transactionId);
+        // Fetch full transaction data from Poster API
+        const posterToken = await getSecret('poster-token');
+        const posterApiData = await fetchPosterTransaction(transactionId, posterToken);
+
+        // Store ONLY Poster API transaction data if available
+        if (posterApiData) {
+          // Use Poster API's transaction_id (string) as the unique key
+          await transactionsCollection.updateOne(
+            { transaction_id: posterApiData.transaction_id },
+            { $set: posterApiData },
+            { upsert: true }
+          );
+          savedToTransactions = true;
+          console.log('✅ Transaction saved:', posterApiData.transaction_id);
+        } else {
+          console.warn('⚠️ Poster API data not available, skipping transaction save');
+        }
       } catch (dbError) {
         const details =
           dbError instanceof Error ? dbError.message : 'Database error';
