@@ -27,16 +27,19 @@ interface PosterWebhookPayload {
   [key: string]: unknown;
 }
 
-interface RawHookDocument {
+interface RawHookDocument extends Record<string, unknown> {
   _id?: ObjectId;
-  received_at: Date;
-  raw_body: unknown;
-  query_params: Record<string, unknown>;
-  processed: boolean;
-  processed_at: Date | null;
-  saved_to_transactions: boolean;
-  processing_error: string | null;
-  error_time: Date | null;
+  // Metadata fields
+  metadata: {
+    received_at: Date;
+    query_params: Record<string, unknown>;
+    processed: boolean;
+    processed_at: Date | null;
+    saved_to_transactions: boolean;
+    processing_error: string | null;
+    error_time: Date | null;
+  };
+  // All other fields are the raw webhook body spread at root level
 }
 
 const ALLOWED_ACTIONS: AllowedAction[] = ['created', 'updated', 'closed', 'changed'];
@@ -163,15 +166,24 @@ export async function webhook(req: Request, res: Response) {
     const transactionsCollection = db.collection('transactions');
 
     const receivedAt = new Date();
+
+    // Store the complete raw webhook body at root level + metadata
+    const rawBodySnapshot = snapshotBody(req.body);
     const rawDocument: RawHookDocument = {
-      received_at: receivedAt,
-      raw_body: snapshotBody(req.body),
-      query_params: snapshotQuery(req.query),
-      processed: false,
-      processed_at: null,
-      saved_to_transactions: false,
-      processing_error: null,
-      error_time: null
+      // Spread the entire webhook body at root level
+      ...(typeof rawBodySnapshot === 'object' && rawBodySnapshot !== null
+        ? rawBodySnapshot as Record<string, unknown>
+        : { raw_body_string: rawBodySnapshot }),
+      // Add metadata
+      metadata: {
+        received_at: receivedAt,
+        query_params: snapshotQuery(req.query),
+        processed: false,
+        processed_at: null,
+        saved_to_transactions: false,
+        processing_error: null,
+        error_time: null
+      }
     };
 
     let rawHookId: ObjectId;
@@ -194,8 +206,8 @@ export async function webhook(req: Request, res: Response) {
           { _id: rawHookId },
           {
             $set: {
-              processing_error: message,
-              error_time: new Date()
+              'metadata.processing_error': message,
+              'metadata.error_time': new Date()
             }
           }
         );
@@ -319,11 +331,11 @@ export async function webhook(req: Request, res: Response) {
         { _id: rawHookId },
         {
           $set: {
-            processed: true,
-            processed_at: new Date(),
-            saved_to_transactions: savedToTransactions,
-            processing_error: null,
-            error_time: null
+            'metadata.processed': true,
+            'metadata.processed_at': new Date(),
+            'metadata.saved_to_transactions': savedToTransactions,
+            'metadata.processing_error': null,
+            'metadata.error_time': null
           }
         }
       );

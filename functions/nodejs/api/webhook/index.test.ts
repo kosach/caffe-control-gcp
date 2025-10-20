@@ -136,7 +136,7 @@ describe('webhook', () => {
       { _id: insertedId },
       expect.objectContaining({
         $set: expect.objectContaining({
-          processing_error: 'Invalid JSON payload'
+          'metadata.processing_error': 'Invalid JSON payload'
         })
       })
     );
@@ -161,7 +161,7 @@ describe('webhook', () => {
       { _id: insertedId },
       expect.objectContaining({
         $set: expect.objectContaining({
-          processing_error: 'Missing required field: action'
+          'metadata.processing_error': 'Missing required field: action'
         })
       })
     );
@@ -187,7 +187,7 @@ describe('webhook', () => {
       { _id: insertedId },
       expect.objectContaining({
         $set: expect.objectContaining({
-          processing_error: 'Invalid action: deleted. Allowed: created, updated, closed, changed'
+          'metadata.processing_error': 'Invalid action: deleted. Allowed: created, updated, closed, changed'
         })
       })
     );
@@ -212,7 +212,7 @@ describe('webhook', () => {
       { _id: insertedId },
       expect.objectContaining({
         $set: expect.objectContaining({
-          processing_error: 'Missing required field: data'
+          'metadata.processing_error': 'Missing required field: data'
         })
       })
     );
@@ -238,7 +238,7 @@ describe('webhook', () => {
       { _id: insertedId },
       expect.objectContaining({
         $set: expect.objectContaining({
-          processing_error: 'Missing or invalid field: data.transaction_id'
+          'metadata.processing_error': 'Missing or invalid field: data.transaction_id'
         })
       })
     );
@@ -261,8 +261,8 @@ describe('webhook', () => {
       { _id: insertedId },
       expect.objectContaining({
         $set: expect.objectContaining({
-          processed: true,
-          saved_to_transactions: false
+          'metadata.processed': true,
+          'metadata.saved_to_transactions': false
         })
       })
     );
@@ -330,7 +330,7 @@ describe('webhook', () => {
       { _id: insertedId },
       expect.objectContaining({
         $set: expect.objectContaining({
-          processing_error: 'Write error'
+          'metadata.processing_error': 'Write error'
         })
       })
     );
