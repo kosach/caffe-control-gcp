@@ -68,11 +68,14 @@ describe('webhook', () => {
       method: 'POST',
       query: { 'api-key': 'valid-key' },
       body: {
-        action: 'created',
-        data: {
-          transaction_id: 123,
-          status: '2'
-        }
+        account: 'test_account',
+        account_number: '12345',
+        object: 'transaction',
+        object_id: 123,
+        action: 'added',
+        time: '1729400000',
+        verify: 'test_hash',
+        data: '{"status":"2"}'
       },
       ...overrides
     };

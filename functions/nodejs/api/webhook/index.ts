@@ -7,7 +7,33 @@ import { connectToDatabase, getSecret } from '../../utils/mongodb';
  * @see https://dev.joinposter.com/docs/v3/web/webhooks
  */
 type PosterAction = 'added' | 'changed' | 'removed' | 'transformed';
-type AllowedAction = 'created' | 'updated' | 'closed' | PosterAction;
+
+/**
+ * Transaction history entry structure from Poster
+ * Based on real webhook data
+ */
+interface TransactionHistory {
+  type_history: string;
+  time: number;
+  value: number | string;
+  value2: number | string;
+  value3: number | string;
+  value4: number | string;
+  value5: number | string | null;
+  value_text: string; // Can be JSON string with product details
+  user_id: number;
+  spot_tablet_id: number;
+}
+
+/**
+ * Transaction data structure (nested in webhook.data field)
+ */
+interface TransactionData {
+  transactions_history?: TransactionHistory;
+  status?: string;
+  payed_sum?: string;
+  [key: string]: unknown; // Allow additional fields
+}
 
 /**
  * Official Poster Webhook Format
@@ -29,23 +55,9 @@ interface PosterWebhook {
   time: string;
   /** Request signature: md5(account;object;object_id;action;data;time;secret) */
   verify: string;
-  /** Additional parameter for some entities (can be JSON string) */
-  data?: string | Record<string, unknown>;
+  /** Additional parameter - JSON string or object with transaction data */
+  data?: string | TransactionData;
 }
-
-/**
- * Simplified format (backwards compatibility for testing)
- */
-interface SimplifiedWebhookPayload {
-  action?: AllowedAction | string;
-  data?: {
-    transaction_id?: number;
-    [key: string]: unknown;
-  };
-  [key: string]: unknown;
-}
-
-type WebhookPayload = PosterWebhook | SimplifiedWebhookPayload;
 
 /**
  * MongoDB document structure for poster-hooks-data collection
@@ -67,27 +79,17 @@ interface RawHookDocument extends Partial<PosterWebhook> {
   [key: string]: unknown;
 }
 
-// Support both Poster actions and simplified actions
-const ALLOWED_ACTIONS: AllowedAction[] = [
-  // Poster official actions
-  'added',
-  'changed',
-  'removed',
-  'transformed',
-  // Simplified format actions (backwards compatibility)
-  'created',
-  'updated',
-  'closed'
-];
+/** Official Poster webhook actions */
+const ALLOWED_ACTIONS: PosterAction[] = ['added', 'changed', 'removed', 'transformed'];
 
-function parsePayload(body: unknown): WebhookPayload {
+function parsePayload(body: unknown): PosterWebhook {
   if (!body) {
-    return {};
+    throw new Error('Empty request body');
   }
 
   if (typeof body === 'string') {
     try {
-      return JSON.parse(body);
+      return JSON.parse(body) as PosterWebhook;
     } catch {
       throw new Error('Invalid JSON payload');
     }
@@ -95,70 +97,34 @@ function parsePayload(body: unknown): WebhookPayload {
 
   if (Buffer.isBuffer(body)) {
     try {
-      return JSON.parse(body.toString('utf8'));
+      return JSON.parse(body.toString('utf8')) as PosterWebhook;
     } catch {
       throw new Error('Invalid JSON payload');
     }
   }
 
-  return body as WebhookPayload;
+  return body as PosterWebhook;
 }
 
 /**
- * Type guard to check if payload is a Poster webhook
+ * Parse nested data field from Poster webhook
+ * The data field can be a JSON string or already parsed object
  */
-function isPosterWebhook(payload: unknown): payload is PosterWebhook {
-  const p = payload as Partial<PosterWebhook>;
-  return (
-    typeof p === 'object' &&
-    p !== null &&
-    'object_id' in p &&
-    typeof p.object_id === 'number'
-  );
-}
-
-/**
- * Normalize Poster webhook format to standard format
- * Handles both official Poster format and simplified format
- */
-function normalizePosterPayload(raw: WebhookPayload): SimplifiedWebhookPayload {
-  // Check if this is the official Poster webhook format
-  if (isPosterWebhook(raw)) {
-    console.log('📦 Detected official Poster webhook format');
-    console.log(`   Object: ${raw.object}, ID: ${raw.object_id}, Action: ${raw.action}`);
-
-    // Parse nested data field if it's a JSON string
-    let parsedData: Record<string, unknown> = {};
-    if (typeof raw.data === 'string') {
-      try {
-        parsedData = JSON.parse(raw.data) as Record<string, unknown>;
-        console.log('📝 Parsed nested JSON data string');
-      } catch (parseError) {
-        console.warn('⚠️ Failed to parse data string, storing as raw');
-        parsedData = { raw_data_string: raw.data };
-      }
-    } else if (raw.data && typeof raw.data === 'object') {
-      parsedData = raw.data;
-    }
-
-    // Return normalized format with all Poster fields preserved
-    return {
-      action: raw.action,
-      data: {
-        transaction_id: raw.object_id,
-        ...parsedData,
-        // Preserve Poster-specific fields for audit trail
-        poster_account: raw.account,
-        poster_object: raw.object,
-        poster_time: raw.time,
-        poster_verify: raw.verify,
-        poster_account_number: raw.account_number
-      }
-    };
+function parseWebhookData(data: string | TransactionData | undefined): TransactionData {
+  if (!data) {
+    return {};
   }
 
-  // Already in simplified format, return as-is
-  return raw as SimplifiedWebhookPayload;
+  if (typeof data === 'string') {
+    try {
+      return JSON.parse(data) as TransactionData;
+    } catch (parseError) {
+      console.warn('⚠️ Failed to parse data string, storing as raw');
+      return { raw_data_string: data };
+    }
+  }
+
+  return data;
 }
 
 function snapshotBody(body: unknown): unknown {
@@ -263,11 +229,10 @@ export async function webhook(req: Request, res: Response) {
       }
     };
 
-    let payload: WebhookPayload;
+    let webhook: PosterWebhook;
 
     try {
-      const rawPayload = parsePayload(req.body);
-      payload = normalizePosterPayload(rawPayload);
+      webhook = parsePayload(req.body);
     } catch (parseError) {
       const details =
         parseError instanceof Error ? parseError.message : 'Invalid payload';
@@ -278,16 +243,15 @@ export async function webhook(req: Request, res: Response) {
       });
     }
 
-    let { action, data } = payload;
+    console.log('📦 Poster webhook:', {
+      object: webhook.object,
+      object_id: webhook.object_id,
+      action: webhook.action,
+      account: webhook.account
+    });
 
-    // Map Poster's 'changed' action to 'closed' for consistency
-    const originalAction = action;
-    if (action === 'changed') {
-      action = 'closed';
-      console.log('🔄 Mapped action "changed" → "closed"');
-    }
-
-    if (!action) {
+    // Validate required fields
+    if (!webhook.action) {
       const details = 'Missing required field: action';
       await markRawError(details);
       console.warn('⚠️ Missing action field');
@@ -297,71 +261,68 @@ export async function webhook(req: Request, res: Response) {
       });
     }
 
-    if (!ALLOWED_ACTIONS.includes(originalAction as AllowedAction)) {
-      const details = `Invalid action: ${originalAction}. Allowed: ${ALLOWED_ACTIONS.join(
-        ', '
-      )}`;
+    if (!ALLOWED_ACTIONS.includes(webhook.action)) {
+      const details = `Invalid action: ${webhook.action}. Allowed: ${ALLOWED_ACTIONS.join(', ')}`;
       await markRawError(details);
-      console.warn('⚠️ Invalid action:', originalAction);
+      console.warn('⚠️ Invalid action:', webhook.action);
       return res.status(400).json({
         error: 'Invalid payload',
         details
       });
     }
 
-    if (!data) {
-      const details = 'Missing required field: data';
+    if (!webhook.object_id) {
+      const details = 'Missing required field: object_id';
       await markRawError(details);
-      console.warn('⚠️ Missing data field');
+      console.warn('⚠️ Missing object_id field');
       return res.status(400).json({
         error: 'Invalid payload',
         details
       });
     }
 
-    const transactionId = data.transaction_id;
-
-    if (typeof transactionId !== 'number' || Number.isNaN(transactionId)) {
-      const details = 'Missing or invalid field: data.transaction_id';
-      await markRawError(details);
-      console.warn('⚠️ Invalid transaction_id:', transactionId);
-      return res.status(400).json({
-        error: 'Invalid payload',
-        details
-      });
-    }
-
+    const transactionId = webhook.object_id;
+    const parsedData = parseWebhookData(webhook.data);
     const timestampIso = receivedAt.toISOString();
-    console.log('🔔 Webhook received:', {
-      action,
-      transaction_id: transactionId,
-      raw_hook_id: rawHookId.toHexString(),
-      timestamp: timestampIso
+
+    console.log('✅ Webhook validated:', {
+      action: webhook.action,
+      object_id: transactionId,
+      raw_hook_id: rawHookId.toHexString()
     });
 
+    // Only save to transactions collection if action is 'changed' (transaction completed)
     let savedToTransactions = false;
 
-    if (action === 'closed') {
+    if (webhook.action === 'changed') {
       try {
         await transactionsCollection.updateOne(
           { transaction_id: transactionId },
           {
             $set: {
-              ...data,
+              transaction_id: transactionId,
+              ...parsedData,
+              // Preserve all Poster webhook fields
+              poster_account: webhook.account,
+              poster_account_number: webhook.account_number,
+              poster_object: webhook.object,
+              poster_time: webhook.time,
+              poster_verify: webhook.verify,
+              // Add webhook metadata
               webhook_received_at: timestampIso,
-              webhook_action: action,
+              webhook_action: webhook.action,
               raw_hook_id: rawHookId
             }
           },
           { upsert: true }
         );
         savedToTransactions = true;
-        console.log('✅ Transaction stored:', transactionId);
+        console.log('✅ Transaction saved:', transactionId);
       } catch (dbError) {
         const details =
           dbError instanceof Error ? dbError.message : 'Database error';
         await markRawError(details);
-        console.error('❌ Failed to upsert transaction:', dbError);
+        console.error('❌ Failed to save transaction:', dbError);
         return res.status(500).json({
           error: 'Processing failed',
           message: 'Unexpected error'
@@ -369,7 +330,7 @@ export async function webhook(req: Request, res: Response) {
       }
     } else {
       console.log(
-        `ℹ️ Action "${action}" does not require transactions persistence`
+        `ℹ️ Action "${webhook.action}" - RAW saved, transaction not persisted`
       );
     }
 
@@ -391,16 +352,15 @@ export async function webhook(req: Request, res: Response) {
     }
 
     console.log('✅ Webhook processing completed:', {
-      transaction_id: transactionId,
-      action: originalAction,
-      mapped_action: action !== originalAction ? action : undefined,
+      object_id: transactionId,
+      action: webhook.action,
       saved_to_transactions: savedToTransactions
     });
 
     return res.status(200).json({
       success: true,
-      transaction_id: transactionId,
-      action: originalAction,
+      object_id: transactionId,
+      action: webhook.action,
       saved_to_transactions: savedToTransactions,
       raw_hook_id: rawHookId.toHexString()
     });
