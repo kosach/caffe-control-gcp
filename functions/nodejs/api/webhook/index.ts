@@ -7,7 +7,13 @@ import { connectToDatabase, getSecret } from '../../utils/mongodb';
  * Official Poster webhook actions
  * @see https://dev.joinposter.com/docs/v3/web/webhooks
  */
-type PosterAction = 'added' | 'changed' | 'removed' | 'transformed';
+enum PosterAction {
+  Added = 'added',
+  Changed = 'changed',
+  Removed = 'removed',
+  Transformed = 'transformed',
+  Closed = 'closed'
+}
 
 /**
  * Transaction history entry structure from Poster
@@ -77,7 +83,7 @@ interface PosterWebhook {
   object: string;
   /** Primary key of the object */
   object_id: number;
-  /** Action performed: added, changed, removed, transformed */
+  /** Action performed: added, changed, removed, transformed, closed */
   action: PosterAction;
   /** Webhook sending time in Unix timestamp */
   time: string;
@@ -93,22 +99,18 @@ interface PosterWebhook {
  */
 interface RawHookDocument extends Partial<PosterWebhook> {
   _id?: ObjectId;
-  // Metadata separated from webhook data
   metadata: {
     received_at: Date;
-    query_params: Record<string, unknown>;
     processed: boolean;
     processed_at: Date | null;
     saved_to_transactions: boolean;
     processing_error: string | null;
     error_time: Date | null;
   };
-  // All webhook fields are spread at root level
   [key: string]: unknown;
 }
 
-/** Official Poster webhook actions */
-const ALLOWED_ACTIONS: PosterAction[] = ['added', 'changed', 'removed', 'transformed'];
+const ALLOWED_ACTIONS = Object.values(PosterAction);
 
 /**
  * Fetch full transaction data from Poster API
@@ -171,27 +173,6 @@ function parsePayload(body: unknown): PosterWebhook {
   return body as PosterWebhook;
 }
 
-/**
- * Parse nested data field from Poster webhook
- * The data field can be a JSON string or already parsed object
- */
-function parseWebhookData(data: string | TransactionData | undefined): TransactionData {
-  if (!data) {
-    return {};
-  }
-
-  if (typeof data === 'string') {
-    try {
-      return JSON.parse(data) as TransactionData;
-    } catch (parseError) {
-      console.warn('⚠️ Failed to parse data string, storing as raw');
-      return { raw_data_string: data };
-    }
-  }
-
-  return data;
-}
-
 function snapshotBody(body: unknown): unknown {
   if (Buffer.isBuffer(body)) {
     return body.toString('utf8');
@@ -206,16 +187,6 @@ function snapshotBody(body: unknown): unknown {
   }
 
   return body ?? null;
-}
-
-function snapshotQuery(query: Request['query']): Record<string, unknown> {
-  const result: Record<string, unknown> = {};
-
-  Object.entries(query ?? {}).forEach(([key, value]) => {
-    result[key] = Array.isArray(value) ? [...value] : value;
-  });
-
-  return result;
 }
 
 export async function webhook(req: Request, res: Response) {
@@ -255,7 +226,6 @@ export async function webhook(req: Request, res: Response) {
       // Add metadata
       metadata: {
         received_at: receivedAt,
-        query_params: snapshotQuery(req.query),
         processed: false,
         processed_at: null,
         saved_to_transactions: false,
@@ -347,8 +317,6 @@ export async function webhook(req: Request, res: Response) {
     }
 
     const transactionId = webhook.object_id;
-    const parsedData = parseWebhookData(webhook.data);
-    const timestampIso = receivedAt.toISOString();
 
     console.log('✅ Webhook validated:', {
       action: webhook.action,
@@ -356,10 +324,10 @@ export async function webhook(req: Request, res: Response) {
       raw_hook_id: rawHookId.toHexString()
     });
 
-    // Only save to transactions collection if action is 'changed' (transaction completed)
+    // Only save to transactions collection if action is 'changed' or 'closed' (transaction completed)
     let savedToTransactions = false;
 
-    if (webhook.action === 'changed') {
+    if (webhook.action === PosterAction.Closed) {
       try {
         // Fetch full transaction data from Poster API
         const posterToken = await getSecret('poster-token');
