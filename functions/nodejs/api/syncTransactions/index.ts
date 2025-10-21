@@ -78,8 +78,8 @@ export async function syncTransactions(req: Request, res: Response) {
         per_page: '100'
       });
 
-      if (dateFrom) params.append('dateFrom', dateFrom);
-      if (dateTo) params.append('dateTo', dateTo);
+      if (dateFrom) params.append('date_from', dateFrom);
+      if (dateTo) params.append('date_to', dateTo);
       if (status) params.append('status', status);
 
       const url = `https://joinposter.com/api/dash.getTransactions?${params.toString()}`;
