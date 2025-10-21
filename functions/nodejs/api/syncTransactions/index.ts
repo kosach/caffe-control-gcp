@@ -48,6 +48,17 @@ export async function syncTransactions(req: Request, res: Response) {
     }
 
     console.log('✅ Auth validated');
+
+    // Require dateFrom parameter to prevent syncing all transactions
+    if (!dateFrom) {
+      console.warn('⚠️ Missing required parameter: dateFrom');
+      return res.status(400).json({
+        success: false,
+        error: 'Bad Request',
+        message: 'dateFrom parameter is required (format: YYYY-MM-DD)'
+      });
+    }
+
     console.log('📋 Sync params:', JSON.stringify({ dateFrom, dateTo, status }));
 
     // Get Poster API token
@@ -59,6 +70,8 @@ export async function syncTransactions(req: Request, res: Response) {
     let affectedWithError = 0;
     let page = 1;
     let shouldContinue = true;
+    let pagesWithoutNewRecords = 0;
+    const MAX_PAGES_WITHOUT_NEW_RECORDS = 10; // Stop after 10 pages with only duplicates
 
     // Connect to database
     console.log('🔌 Connecting to database...');
@@ -72,15 +85,13 @@ export async function syncTransactions(req: Request, res: Response) {
       console.log(`📄 Processing page ${page}...`);
 
       // Build Poster API URL
+      // NOTE: dash.getTransactions does NOT support date filtering via API parameters
+      // We filter locally after fetching the data
       const params = new URLSearchParams({
         token: posterToken,
         page: page.toString(),
         per_page: '100'
       });
-
-      if (dateFrom) params.append('date_from', dateFrom);
-      if (dateTo) params.append('date_to', dateTo);
-      if (status) params.append('status', status);
 
       const url = `https://joinposter.com/api/dash.getTransactions?${params.toString()}`;
 
@@ -112,24 +123,67 @@ export async function syncTransactions(req: Request, res: Response) {
           break;
         }
 
-        const transactions = data.response as any[];
+        let transactions = data.response as any[];
         console.log(`📦 Fetched ${transactions.length} transactions from page ${page}`);
+
+        // Check if all transactions on this page are older than dateFrom
+        // If so, we can stop pagination (Poster returns newest first)
+        const allTooOld = transactions.every((tx: any) => {
+          const txDate = tx.date_close_date;
+          if (!txDate) return true;
+          const txDateOnly = txDate.split(' ')[0];
+          return txDateOnly < dateFrom;
+        });
+
+        if (allTooOld) {
+          console.log('🛑 All transactions on this page are older than dateFrom, stopping pagination');
+          shouldContinue = false;
+          break;
+        }
+
+        // Filter transactions by date locally (since Poster API doesn't support date filtering)
+        const originalCount = transactions.length;
+        transactions = transactions.filter((tx: any) => {
+          const txDate = tx.date_close_date; // Format: "YYYY-MM-DD HH:MM:SS"
+          if (!txDate) return false;
+
+          const txDateOnly = txDate.split(' ')[0]; // Get "YYYY-MM-DD" part
+
+          // Check if transaction is >= dateFrom
+          if (dateFrom && txDateOnly < dateFrom) return false;
+
+          // Check if transaction is <= dateTo
+          if (dateTo && txDateOnly > dateTo) return false;
+
+          return true;
+        });
+
+        console.log(`🔍 After date filtering: ${transactions.length}/${originalCount} transactions match criteria`);
+
+        // Skip this page if no transactions match the date filter
+        if (transactions.length === 0) {
+          console.log('⏭️  No matching transactions, skipping to next page');
+          page++;
+          continue;
+        }
 
         // Insert into MongoDB with unordered bulk write
         // This continues on duplicate key errors
+        let insertedCount = 0;
         try {
           const result = await transactionsCollection.insertMany(
             transactions,
             { ordered: false }
           );
 
-          affectedRows += result.insertedCount;
-          console.log(`✅ Inserted ${result.insertedCount} new transactions`);
+          insertedCount = result.insertedCount;
+          affectedRows += insertedCount;
+          console.log(`✅ Inserted ${insertedCount} new transactions`);
         } catch (err: any) {
           // Handle duplicate key errors (E11000)
           if (err.code === 11000 || err.writeErrors) {
             const duplicateCount = err.writeErrors?.length || 0;
-            const insertedCount = err.result?.nInserted || 0;
+            insertedCount = err.result?.nInserted || 0;
 
             affectedWithError += duplicateCount;
             affectedRows += insertedCount;
@@ -139,6 +193,21 @@ export async function syncTransactions(req: Request, res: Response) {
             // Re-throw unexpected errors
             throw err;
           }
+        }
+
+        // Track pages without new records
+        if (insertedCount === 0) {
+          pagesWithoutNewRecords++;
+          console.log(`📊 Pages without new records: ${pagesWithoutNewRecords}/${MAX_PAGES_WITHOUT_NEW_RECORDS}`);
+
+          if (pagesWithoutNewRecords >= MAX_PAGES_WITHOUT_NEW_RECORDS) {
+            console.log('🛑 Reached max pages without new records, stopping pagination');
+            shouldContinue = false;
+            break;
+          }
+        } else {
+          // Reset counter if we found new records
+          pagesWithoutNewRecords = 0;
         }
 
         // Move to next page
