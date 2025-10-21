@@ -29,3 +29,6 @@ terraform/terraform.tfvars
 terraform/**/.tmp/
 
 diff.txt
+
+# AI
+.mcp.json

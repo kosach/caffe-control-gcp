@@ -1,4 +1,3 @@
-cat > docs/migration-guide.md << 'EOF'
 # Migration Guide
 
 Step-by-step guide for migrating from MongoDB Atlas App Services to GCP Cloud Functions.
@@ -75,5 +74,3 @@ const token = version.payload.data.toString();
 **Atlas:** Automatic via `context.services.get()`
 
 **GCP:** Manual connection via MongoDB driver
-
-EOF

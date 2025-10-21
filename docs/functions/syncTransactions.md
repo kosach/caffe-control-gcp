@@ -29,9 +29,8 @@ GET /syncTransactions
 | Parameter | Type | Required | Description | Default |
 |-----------|------|----------|-------------|---------|
 | auth-token | string | Yes | API authentication token | - |
-| dateFrom | string | No | Start date (YYYY-MM-DD HH:MM:SS) | - |
-| dateTo | string | No | End date (YYYY-MM-DD HH:MM:SS) | - |
-| status | string | No | Transaction status filter (e.g., "accepted") | - |
+| dateFrom | string | **Yes** | Start date (YYYY-MM-DD) | - |
+| dateTo | string | No | End date (YYYY-MM-DD) | - |
 
 ### Response Format
 
@@ -61,35 +60,46 @@ GET /syncTransactions
 | Status Code | Description |
 |-------------|-------------|
 | 200 | Sync completed (partial or full success) |
+| 400 | Bad Request - missing required dateFrom parameter |
 | 401 | Unauthorized - invalid auth token |
 | 500 | Server error |
 
 ## Algorithm Flow
 
 ```
-1. Initialize counters (affectedRows, affectedWithError, totalRows, page)
-2. Loop while not stopped:
+1. Validate required dateFrom parameter (return 400 if missing)
+2. Initialize counters (affectedRows, affectedWithError, totalRows, page, pagesWithoutNewRecords)
+3. Loop while not stopped:
    a. Fetch transactions page from Poster API (100 per page)
-   b. If page 1: store total count
-   c. If no data returned: stop loop
-   d. Insert batch into MongoDB with ordered: false
-   e. Catch duplicate key errors, count them
-   f. Add successful inserts to affectedRows
-   g. Increment page counter
-3. Return statistics
+   b. Check if all transactions are older than dateFrom → stop if true
+   c. Filter transactions locally by dateFrom/dateTo (Poster API doesn't support date filtering)
+   d. If no matching transactions after filter: skip to next page
+   e. Insert batch into MongoDB with ordered: false
+   f. Catch duplicate key errors, count them
+   g. Add successful inserts to affectedRows
+   h. Track pages without new records (stop after 10 consecutive)
+   i. Increment page counter
+4. Return statistics
 ```
 
 ## Implementation Details
 
 ### Poster API Integration
 
+**Important**: Poster API `dash.getTransactions` does NOT support date filtering via parameters. We filter locally after fetching.
+
 ```typescript
-// Fetch transactions from Poster API
+// Fetch transactions from Poster API (no date filtering available)
 const response = await fetch(
   `https://joinposter.com/api/dash.getTransactions?token=${POSTER_TOKEN}` +
-  `&dateFrom=${dateFrom}&dateTo=${dateTo}&status=${status}` +
   `&page=${page}&per_page=100`
 );
+
+// Filter locally by date
+transactions = transactions.filter((tx) => {
+  const txDate = tx.date_close_date.split(' ')[0]; // Get YYYY-MM-DD
+  return txDate >= dateFrom && (!dateTo || txDate <= dateTo);
+});
 ```
 
 ### MongoDB Insertion Strategy
@@ -162,28 +172,31 @@ describe('syncTransactions', () => {
 # Test without auth (expect 401)
 curl "http://localhost:8080"
 
-# Test full sync (last 7 days)
+# Test without dateFrom (expect 400)
 curl "http://localhost:8080?auth-token=caffe-secure-2025-prod-key-x7k9m"
 
-# Test with date range
-curl "http://localhost:8080?auth-token=...&dateFrom=2025-01-01%2000:00:00&dateTo=2025-01-31%2023:59:59"
+# Test with single day
+curl "http://localhost:8080?auth-token=caffe-secure-2025-prod-key-x7k9m&dateFrom=2025-10-21"
 
-# Test with status filter
-curl "http://localhost:8080?auth-token=...&status=accepted"
+# Test with date range
+curl "http://localhost:8080?auth-token=...&dateFrom=2025-01-01&dateTo=2025-01-31"
 
 # Test duplicate sync (run twice, expect affectedWithError > 0)
-curl "http://localhost:8080?auth-token=...&dateFrom=2025-01-20%2000:00:00"
+curl "http://localhost:8080?auth-token=...&dateFrom=2025-10-20&dateTo=2025-10-21"
 ```
 
 ### Production Testing
 
 ```bash
 # Initial sync (small date range first!)
-curl "https://europe-west1-caffe-control-prod.cloudfunctions.net/syncTransactions?auth-token=...&dateFrom=2025-01-20%2000:00:00&dateTo=2025-01-21%2000:00:00"
+curl "https://synctransactions-5txnprikja-ew.a.run.app?auth-token=...&dateFrom=2025-10-21"
+
+# Test with date range
+curl "https://synctransactions-5txnprikja-ew.a.run.app?auth-token=...&dateFrom=2025-10-15&dateTo=2025-10-21"
 
 # Verify MongoDB records
 # Check logs in GCP Console
-# Run again to verify duplicate handling
+# Run again to verify duplicate handling (should stop after ~10 pages)
 ```
 
 ## Dependencies
@@ -199,10 +212,12 @@ curl "https://europe-west1-caffe-control-prod.cloudfunctions.net/syncTransaction
 
 ## Notes
 
-- **Use Case**: One-time migration or periodic full sync
+- **Use Case**: One-time migration or periodic full sync for specific date ranges
 - **Not Real-Time**: For real-time updates, use webhook function
 - **Idempotent**: Safe to run multiple times (handles duplicates)
-- **Long-Running**: May take several minutes for large datasets
+- **Smart Stopping**: Automatically stops after 10 consecutive pages without new records
+- **Required Parameter**: dateFrom is REQUIRED to prevent accidental full sync
+- **Date Filtering**: Done locally (Poster API doesn't support date parameters)
 - **Monitoring**: Check GCP logs for progress and errors
 
 ## Migration Priority

@@ -1,7 +1,6 @@
-cat > docs/infrastructure.md << 'EOF'
 # Infrastructure Overview
 
-Last updated: 2025-10-15
+Last updated: 2025-10-21
 
 ## GCP Project
 
@@ -62,5 +61,3 @@ Current setup (minimal usage):
 - Storage Bucket: ~$0.02/GB/month
 - Cloud Functions: Pay per invocation
 - Total base cost: ~$1-2/month (without function invocations)
-
-EOF

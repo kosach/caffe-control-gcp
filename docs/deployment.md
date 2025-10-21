@@ -1,4 +1,3 @@
-cat > docs/deployment.md << 'EOF'
 # Deployment Guide
 
 ## Prerequisites
@@ -21,22 +20,37 @@ cat > docs/deployment.md << 'EOF'
 
 ## Deploy a Function
 
-### Manual Deployment
+### Using Terraform (Recommended)
+
+1. Add function to `functions/nodejs/api/FUNCTION_NAME/index.ts`
+2. Add entry point to `functions/nodejs/tsup.config.ts`
+3. Bundle the function:
 ```bash
-gcloud functions deploy FUNCTION_NAME \
-  --gen2 \
-  --runtime=nodejs20 \
-  --region=europe-west1 \
-  --source=./functions/api/FUNCTION_NAME \
-  --entry-point=handler \
-  --trigger-http \
-  --allow-unauthenticated \
-  --service-account=caffe-functions@caffe-control-prod.iam.gserviceaccount.com
+cd functions/nodejs
+npm run bundle
 ```
 
-### Using Deployment Script
+4. Add Terraform module to `terraform/main.tf`:
+```hcl
+module "function_name" {
+  source = "./modules/cloud-function"
+
+  function_name         = "functionName"
+  entry_point           = "functionName"
+  source_dir            = "../functions/nodejs/dist-bundle/functionName"
+  region                = var.region
+  service_account_email = google_service_account.functions_sa.email
+  project_id            = var.project_id
+  memory                = "256M"  # Optional, defaults to 256M
+  timeout               = 60      # Optional, defaults to 60s
+}
+```
+
+5. Deploy with Terraform:
 ```bash
-./scripts/deploy-function.sh FUNCTION_NAME
+cd terraform
+terraform plan
+terraform apply
 ```
 
 ## Function Configuration
@@ -94,5 +108,3 @@ gcloud functions versions list FUNCTION_NAME
 # Rollback to previous version
 gcloud functions deploy FUNCTION_NAME --version=VERSION_ID
 ```
-
-EOF
