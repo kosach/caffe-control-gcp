@@ -43,30 +43,63 @@ interface TransactionData {
 }
 
 /**
- * Poster API response for finance.getTransaction
- * @see https://dev.joinposter.com/docs/v3/web/finance/getTransaction
+ * Poster API response for dash.getTransaction
+ * @see https://dev.joinposter.com/docs/v3/web/dash/getTransaction
+ * @see docs/poster/getTtransaction.md
  */
+interface PosterTransaction {
+  transaction_id: string;
+  date_start: string;
+  date_start_new: string;
+  date_close: string;
+  status: string;
+  guests_count: string;
+  name: string;
+  discount: string;
+  bonus: string;
+  pay_type: string;
+  payed_bonus: string;
+  payed_card: string;
+  payed_cash: string;
+  payed_sum: string;
+  payed_cert: string;
+  payed_third_party: string;
+  payed_card_type: string;
+  payed_ewallet: string;
+  round_sum: string;
+  tip_sum: string;
+  tips_card: string;
+  tips_cash: string;
+  sum: string;
+  tax_sum: string;
+  payment_method_id: string;
+  spot_id: string;
+  table_id: string;
+  table_name: string | null;
+  user_id: string;
+  client_id: string;
+  card_number: string;
+  transaction_comment: string | null;
+  reason: string;
+  print_fiscal: string;
+  total_profit: string;
+  total_profit_netto: string;
+  client_firstname: string | null;
+  client_lastname: string | null;
+  date_close_date: string;
+  service_mode: string;
+  processing_status: string;
+  client_phone: string | null;
+  auto_accept?: boolean;
+  application_id?: string | null;
+  products?: unknown[];
+  history?: unknown[];
+  delivery?: unknown;
+  [key: string]: unknown;
+}
+
 interface PosterTransactionResponse {
-  response: {
-    transaction_id: string;
-    account_id: string;
-    user_id: string;
-    category_id: string;
-    type: string;
-    amount: string;
-    balance: string;
-    date: string;
-    recipient_type: string;
-    recipient_id: string;
-    binding_type: string;
-    binding_id: string;
-    comment: string;
-    delete: string;
-    account_name: string;
-    category_name: string;
-    currency_symbol: string;
-    [key: string]: unknown;
-  };
+  response: PosterTransaction[];
 }
 
 /**
@@ -114,13 +147,14 @@ const ALLOWED_ACTIONS = Object.values(PosterAction);
 
 /**
  * Fetch full transaction data from Poster API
+ * @see docs/poster/getTtransaction.md
  */
 async function fetchPosterTransaction(
   transactionId: number,
   posterToken: string
-): Promise<PosterTransactionResponse['response'] | null> {
+): Promise<PosterTransaction | null> {
   try {
-    const url = `https://joinposter.com/api/finance.getTransaction?token=${posterToken}&transaction_id=${transactionId}`;
+    const url = `https://joinposter.com/api/dash.getTransaction?token=${posterToken}&transaction_id=${transactionId}&include_products=true&include_history=true&include_delivery=true`;
 
     console.log('🔍 Fetching transaction from Poster API:', transactionId);
 
@@ -128,9 +162,9 @@ async function fetchPosterTransaction(
       timeout: 10000 // 10 second timeout
     });
 
-    if (response.data && response.data.response) {
+    if (response.data && response.data.response && response.data.response.length > 0) {
       console.log('✅ Poster API data fetched successfully');
-      return response.data.response;
+      return response.data.response[0]; // Return first element of array
     }
 
     console.warn('⚠️ Poster API returned empty response');
@@ -327,7 +361,7 @@ export async function webhook(req: Request, res: Response) {
     // Only save to transactions collection if action is 'changed' or 'closed' (transaction completed)
     let savedToTransactions = false;
 
-    if (webhook.action === PosterAction.Closed) {
+    if (webhook.action === PosterAction.Closed || webhook.action === PosterAction.Changed) {
       try {
         // Fetch full transaction data from Poster API
         const posterToken = await getSecret('poster-token');
