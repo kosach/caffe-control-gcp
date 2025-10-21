@@ -23,6 +23,16 @@ variable "project_id" {
   type = string
 }
 
+variable "memory" {
+  type    = string
+  default = "256M"
+}
+
+variable "timeout" {
+  type    = number
+  default = 60
+}
+
 # Create ZIP archive
 data "archive_file" "function_zip" {
   type        = "zip"
@@ -54,10 +64,10 @@ resource "google_cloudfunctions2_function" "function" {
   }
 
   service_config {
-    available_memory      = "256M"
-    timeout_seconds       = 60
+    available_memory      = var.memory
+    timeout_seconds       = var.timeout
     service_account_email = var.service_account_email
-    
+
     environment_variables = {
       GCP_PROJECT_ID = var.project_id
     }

@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "MongoDB": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "mongodb-mcp-server@latest", "--readOnly"],
+      "env": {
+        "MDB_MCP_CONNECTION_STRING": "mongodb+srv://kosacha:8P6iYibK.dN4pQq@cluster0.yyjd0kx.mongodb.net/easy-control"
+      }
+    }
+  }
+}

@@ -2,12 +2,13 @@ import { defineConfig } from 'tsup';
 import fs from 'fs';
 import path from 'path';
 
-const functions = ['getAllTransactions', 'webhook'];
+const functions = ['getAllTransactions', 'webhook', 'syncTransactions'];
 
 export default defineConfig({
   entry: {
     'getAllTransactions': 'api/getAllTransactions/index.ts',
-    'webhook': 'api/webhook/index.ts'
+    'webhook': 'api/webhook/index.ts',
+    'syncTransactions': 'api/syncTransactions/index.ts'
   },
   format: ['cjs'],
   target: 'node20',

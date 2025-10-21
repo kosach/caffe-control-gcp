@@ -13,6 +13,7 @@
 - [x] Optimize memory usage (256M)
 - [x] Add project structure documentation
 - [x] Clean up unused files and folders
+- [x] Migrate `syncTransactions` function (bulk sync from Poster API)
 
 ## 🔄 In Progress
 
@@ -23,9 +24,23 @@
 ### High Priority - Function Migration
 - [ ] Migrate `getTransaction` function (see docs/functions/getTransaction.md)
 - [ ] Migrate `createTransaction` function
-- [ ] Migrate `updateTransaction` function  
-- [ ] Migrate `syncTransaction` function
+- [ ] Migrate `updateTransaction` function
 - [x] Migrate `webhook` function (Poster webhook handler)
+
+### Medium Priority - Function Migration
+- [x] Migrate `syncTransactions` function (see docs/functions/syncTransactions.md)
+  - [x] Create function implementation in `functions/nodejs/api/syncTransactions/index.ts`
+  - [x] Implement pagination loop (100 records per page)
+  - [x] Integrate Poster API `dash.getTransactions` endpoint
+  - [x] Add MongoDB `insertMany` with `ordered: false` for duplicate handling
+  - [x] Add auth token validation
+  - [x] Create unit tests in `index.test.ts` (10 tests, all passing)
+  - [x] Test locally with Functions Framework
+  - [x] Add to `tsup.config.ts` entry points
+  - [x] Add Terraform module to `main.tf` (512MB memory, 540s timeout)
+  - [x] Deploy to GCP (https://synctransactions-5txnprikja-ew.a.run.app)
+  - [x] Test production endpoint with small date range
+  - [x] Update TODO.md and commit
 
 ### Medium Priority - Testing & Quality
 - [ ] Add e2e integration tests
@@ -56,4 +71,4 @@
 - Reference function specs in docs/functions/ folder
 - Always test locally before deploying
 
-**Last Updated:** Oct 18, 2025
+**Last Updated:** Oct 21, 2025

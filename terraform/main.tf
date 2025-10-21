@@ -162,6 +162,24 @@ module "webhook" {
   ]
 }
 
+module "sync_transactions" {
+  source = "./modules/cloud-function"
+
+  function_name         = "syncTransactions"
+  entry_point           = "syncTransactions"
+  source_dir            = "../functions/nodejs/dist-bundle/syncTransactions"
+  region                = var.region
+  service_account_email = google_service_account.functions_sa.email
+  project_id            = var.project_id
+  memory                = "512M"
+  timeout               = 540
+
+  depends_on = [
+    google_project_service.required_apis,
+    google_storage_bucket.functions_source
+  ]
+}
+
 output "getAllTransactions_url" {
   description = "URL of getAllTransactions function"
   value       = module.get_all_transactions.function_uri
@@ -170,4 +188,9 @@ output "getAllTransactions_url" {
 output "webhook_url" {
   description = "URL of webhook function"
   value       = module.webhook.function_uri
+}
+
+output "syncTransactions_url" {
+  description = "URL of syncTransactions function"
+  value       = module.sync_transactions.function_uri
 }
