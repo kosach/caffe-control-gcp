@@ -17,7 +17,7 @@ export default defineConfig({
   clean: true,
   sourcemap: false,
   minify: false,
-  external: ['@google-cloud/functions-framework'],
+  external: ['@google-cloud/functions-framework', '@google-cloud/firestore'],
   noExternal: ['mongodb', '@google-cloud/secret-manager', 'axios'],
   onSuccess: async () => {
     // Create separate directories for each function
@@ -42,6 +42,9 @@ export default defineConfig({
         type: 'commonjs',
         engines: {
           node: '20'
+        },
+        dependencies: {
+          '@google-cloud/firestore': '^7.11.0'
         }
       };
 

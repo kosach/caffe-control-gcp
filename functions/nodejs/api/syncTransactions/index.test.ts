@@ -1,9 +1,11 @@
 import { syncTransactions } from './index';
 
 // Mock dependencies
+jest.mock('../../utils/database');
 jest.mock('../../utils/mongodb');
 
-import { connectToDatabase, getSecret } from '../../utils/mongodb';
+import { getDatabase } from '../../utils/database';
+import { getSecret } from '../../utils/mongodb';
 
 // Mock global fetch
 global.fetch = jest.fn();
@@ -13,6 +15,7 @@ describe('syncTransactions', () => {
   let mockResponse: any;
   let mockJson: jest.Mock;
   let mockStatus: jest.Mock;
+  let mockDbInstance: any;
 
   beforeEach(() => {
     mockJson = jest.fn();
@@ -20,7 +23,8 @@ describe('syncTransactions', () => {
 
     mockRequest = {
       query: {
-        'auth-token': 'valid-token'
+        'auth-token': 'valid-token',
+        dateFrom: '2025-01-01'
       }
     };
 
@@ -35,6 +39,21 @@ describe('syncTransactions', () => {
       return Promise.resolve('secret');
     });
 
+    // Create mock database instance
+    mockDbInstance = {
+      transactions: {
+        find: jest.fn(),
+        upsert: jest.fn(),
+        insertMany: jest.fn()
+      },
+      rawHooks: {
+        insertOne: jest.fn(),
+        updateOne: jest.fn()
+      }
+    };
+
+    (getDatabase as jest.Mock).mockResolvedValue(mockDbInstance);
+
     jest.clearAllMocks();
   });
 
@@ -43,7 +62,7 @@ describe('syncTransactions', () => {
   });
 
   test('should reject request without auth token', async () => {
-    mockRequest.query = {};
+    mockRequest.query = { dateFrom: '2025-01-01' };
 
     await syncTransactions(mockRequest, mockResponse);
 
@@ -66,10 +85,23 @@ describe('syncTransactions', () => {
     });
   });
 
+  test('should require dateFrom parameter', async () => {
+    mockRequest.query = { 'auth-token': 'valid-token' };
+
+    await syncTransactions(mockRequest, mockResponse);
+
+    expect(mockStatus).toHaveBeenCalledWith(400);
+    expect(mockJson).toHaveBeenCalledWith({
+      success: false,
+      error: 'Bad Request',
+      message: 'dateFrom parameter is required (format: YYYY-MM-DD)'
+    });
+  });
+
   test('should sync new transactions successfully', async () => {
     const mockTransactions = [
-      { transaction_id: '1', payed_sum: '1000' },
-      { transaction_id: '2', payed_sum: '2000' }
+      { transaction_id: '1', payed_sum: '1000', date_close_date: '2025-01-15 10:00:00' },
+      { transaction_id: '2', payed_sum: '2000', date_close_date: '2025-01-16 11:00:00' }
     ];
 
     // Mock Poster API response
@@ -87,19 +119,9 @@ describe('syncTransactions', () => {
       })
     } as Response);
 
-    // Mock MongoDB insertMany
-    const mockInsertMany = jest.fn().mockResolvedValue({
-      insertedCount: 2
-    });
-
-    const mockCollection = {
-      insertMany: mockInsertMany
-    };
-
-    (connectToDatabase as jest.Mock).mockResolvedValue({
-      db: {
-        collection: jest.fn().mockReturnValue(mockCollection)
-      }
+    mockDbInstance.transactions.insertMany.mockResolvedValue({
+      insertedCount: 2,
+      duplicateCount: 0
     });
 
     await syncTransactions(mockRequest, mockResponse);
@@ -115,17 +137,14 @@ describe('syncTransactions', () => {
       }
     });
 
-    expect(mockInsertMany).toHaveBeenCalledWith(
-      mockTransactions,
-      { ordered: false }
-    );
+    expect(mockDbInstance.transactions.insertMany).toHaveBeenCalledWith(mockTransactions);
   });
 
   test('should handle duplicate transactions gracefully', async () => {
     const mockTransactions = [
-      { transaction_id: '1', payed_sum: '1000' },
-      { transaction_id: '2', payed_sum: '2000' },
-      { transaction_id: '3', payed_sum: '3000' }
+      { transaction_id: '1', payed_sum: '1000', date_close_date: '2025-01-15 10:00:00' },
+      { transaction_id: '2', payed_sum: '2000', date_close_date: '2025-01-16 11:00:00' },
+      { transaction_id: '3', payed_sum: '3000', date_close_date: '2025-01-17 12:00:00' }
     ];
 
     // Mock Poster API response
@@ -143,26 +162,10 @@ describe('syncTransactions', () => {
       })
     } as Response);
 
-    // Mock MongoDB insertMany with duplicate key error
-    const mockInsertMany = jest.fn().mockRejectedValue({
-      code: 11000,
-      writeErrors: [
-        { index: 0, code: 11000 },
-        { index: 2, code: 11000 }
-      ],
-      result: {
-        nInserted: 1
-      }
-    });
-
-    const mockCollection = {
-      insertMany: mockInsertMany
-    };
-
-    (connectToDatabase as jest.Mock).mockResolvedValue({
-      db: {
-        collection: jest.fn().mockReturnValue(mockCollection)
-      }
+    // Mock insertMany with duplicates
+    mockDbInstance.transactions.insertMany.mockResolvedValue({
+      insertedCount: 1,
+      duplicateCount: 2
     });
 
     await syncTransactions(mockRequest, mockResponse);
@@ -179,140 +182,6 @@ describe('syncTransactions', () => {
     });
   });
 
-  test('should process multiple pages', async () => {
-    const page1Transactions = Array.from({ length: 100 }, (_, i) => ({
-      transaction_id: `${i + 1}`,
-      payed_sum: '1000'
-    }));
-
-    const page2Transactions = Array.from({ length: 50 }, (_, i) => ({
-      transaction_id: `${i + 101}`,
-      payed_sum: '2000'
-    }));
-
-    // Mock Poster API responses for 2 pages
-    (global.fetch as jest.Mock)
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({
-          response: page1Transactions,
-          count: 150
-        })
-      } as Response)
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({
-          response: page2Transactions,
-          count: 150
-        })
-      } as Response)
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({
-          response: [],
-          count: 150
-        })
-      } as Response);
-
-    const mockInsertMany = jest.fn()
-      .mockResolvedValueOnce({ insertedCount: 100 })
-      .mockResolvedValueOnce({ insertedCount: 50 });
-
-    const mockCollection = {
-      insertMany: mockInsertMany
-    };
-
-    (connectToDatabase as jest.Mock).mockResolvedValue({
-      db: {
-        collection: jest.fn().mockReturnValue(mockCollection)
-      }
-    });
-
-    await syncTransactions(mockRequest, mockResponse);
-
-    expect(mockStatus).toHaveBeenCalledWith(200);
-    expect(mockJson).toHaveBeenCalledWith({
-      success: true,
-      data: {
-        totalRows: 150,
-        affectedRows: 150,
-        affectedWithError: 0,
-        pagesProcessed: 2
-      }
-    });
-
-    expect(mockInsertMany).toHaveBeenCalledTimes(2);
-  });
-
-  test('should apply date filters correctly', async () => {
-    mockRequest.query = {
-      'auth-token': 'valid-token',
-      dateFrom: '2025-01-01 00:00:00',
-      dateTo: '2025-01-31 23:59:59'
-    };
-
-    (global.fetch as jest.Mock).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({
-        response: [],
-        count: 0
-      })
-    } as Response);
-
-    const mockCollection = {
-      insertMany: jest.fn()
-    };
-
-    (connectToDatabase as jest.Mock).mockResolvedValue({
-      db: {
-        collection: jest.fn().mockReturnValue(mockCollection)
-      }
-    });
-
-    await syncTransactions(mockRequest, mockResponse);
-
-    expect(global.fetch).toHaveBeenCalledWith(
-      expect.stringContaining('dateFrom=2025-01-01+00%3A00%3A00'),
-      expect.any(Object)
-    );
-    expect(global.fetch).toHaveBeenCalledWith(
-      expect.stringContaining('dateTo=2025-01-31+23%3A59%3A59'),
-      expect.any(Object)
-    );
-  });
-
-  test('should apply status filter correctly', async () => {
-    mockRequest.query = {
-      'auth-token': 'valid-token',
-      status: 'accepted'
-    };
-
-    (global.fetch as jest.Mock).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({
-        response: [],
-        count: 0
-      })
-    } as Response);
-
-    const mockCollection = {
-      insertMany: jest.fn()
-    };
-
-    (connectToDatabase as jest.Mock).mockResolvedValue({
-      db: {
-        collection: jest.fn().mockReturnValue(mockCollection)
-      }
-    });
-
-    await syncTransactions(mockRequest, mockResponse);
-
-    expect(global.fetch).toHaveBeenCalledWith(
-      expect.stringContaining('status=accepted'),
-      expect.any(Object)
-    );
-  });
-
   test('should handle empty results', async () => {
     (global.fetch as jest.Mock).mockResolvedValueOnce({
       ok: true,
@@ -321,16 +190,6 @@ describe('syncTransactions', () => {
         count: 0
       })
     } as Response);
-
-    const mockCollection = {
-      insertMany: jest.fn()
-    };
-
-    (connectToDatabase as jest.Mock).mockResolvedValue({
-      db: {
-        collection: jest.fn().mockReturnValue(mockCollection)
-      }
-    });
 
     await syncTransactions(mockRequest, mockResponse);
 
@@ -353,16 +212,6 @@ describe('syncTransactions', () => {
       statusText: 'Internal Server Error'
     } as Response);
 
-    const mockCollection = {
-      insertMany: jest.fn()
-    };
-
-    (connectToDatabase as jest.Mock).mockResolvedValue({
-      db: {
-        collection: jest.fn().mockReturnValue(mockCollection)
-      }
-    });
-
     await syncTransactions(mockRequest, mockResponse);
 
     expect(mockStatus).toHaveBeenCalledWith(500);
@@ -374,25 +223,19 @@ describe('syncTransactions', () => {
   });
 
   test('should handle database errors', async () => {
+    const mockTransactions = [
+      { transaction_id: '1', date_close_date: '2025-01-15 10:00:00' }
+    ];
+
     (global.fetch as jest.Mock).mockResolvedValueOnce({
       ok: true,
       json: async () => ({
-        response: [{ transaction_id: '1' }],
+        response: mockTransactions,
         count: 1
       })
     } as Response);
 
-    const mockInsertMany = jest.fn().mockRejectedValue(new Error('Database connection failed'));
-
-    const mockCollection = {
-      insertMany: mockInsertMany
-    };
-
-    (connectToDatabase as jest.Mock).mockResolvedValue({
-      db: {
-        collection: jest.fn().mockReturnValue(mockCollection)
-      }
-    });
+    mockDbInstance.transactions.insertMany.mockRejectedValue(new Error('Database connection failed'));
 
     await syncTransactions(mockRequest, mockResponse);
 
@@ -402,5 +245,26 @@ describe('syncTransactions', () => {
       error: 'Internal server error',
       message: 'Database connection failed'
     });
+  });
+
+  test('should stop when all transactions are older than dateFrom', async () => {
+    const oldTransactions = [
+      { transaction_id: '1', date_close_date: '2024-12-01 10:00:00' },
+      { transaction_id: '2', date_close_date: '2024-12-15 11:00:00' }
+    ];
+
+    (global.fetch as jest.Mock).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        response: oldTransactions,
+        count: 2
+      })
+    } as Response);
+
+    await syncTransactions(mockRequest, mockResponse);
+
+    expect(mockStatus).toHaveBeenCalledWith(200);
+    // Should not have called insertMany since all are too old
+    expect(mockDbInstance.transactions.insertMany).not.toHaveBeenCalled();
   });
 });

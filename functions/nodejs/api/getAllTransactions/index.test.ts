@@ -1,20 +1,23 @@
 import { getAllTransactions } from './index';
 
 // Mock dependencies
+jest.mock('../../utils/database');
 jest.mock('../../utils/mongodb');
 
-import { connectToDatabase, getSecret } from '../../utils/mongodb';
+import { getDatabase } from '../../utils/database';
+import { getSecret } from '../../utils/mongodb';
 
 describe('getAllTransactions', () => {
   let mockRequest: any;
   let mockResponse: any;
   let mockJson: jest.Mock;
   let mockStatus: jest.Mock;
+  let mockDbInstance: any;
 
   beforeEach(() => {
     mockJson = jest.fn();
     mockStatus = jest.fn().mockReturnValue({ json: mockJson });
-    
+
     mockRequest = {
       query: {
         'auth-token': 'valid-token'
@@ -27,6 +30,21 @@ describe('getAllTransactions', () => {
     };
 
     (getSecret as jest.Mock).mockResolvedValue('valid-token');
+
+    // Create mock database instance
+    mockDbInstance = {
+      transactions: {
+        find: jest.fn(),
+        upsert: jest.fn(),
+        insertMany: jest.fn()
+      },
+      rawHooks: {
+        insertOne: jest.fn(),
+        updateOne: jest.fn()
+      }
+    };
+
+    (getDatabase as jest.Mock).mockResolvedValue(mockDbInstance);
   });
 
   afterEach(() => {
@@ -39,63 +57,62 @@ describe('getAllTransactions', () => {
       { transaction_id: '2', payed_sum: '2000' }
     ];
 
-    const mockCursor = {
-      limit: jest.fn().mockReturnThis(),
-      toArray: jest.fn().mockResolvedValue(mockTransactions)
-    };
-
-    const mockCollection = {
-      find: jest.fn().mockReturnValue(mockCursor)
-    };
-
-    (connectToDatabase as jest.Mock).mockResolvedValue({
-      db: {
-        collection: jest.fn().mockReturnValue(mockCollection)
-      }
-    });
+    mockDbInstance.transactions.find.mockResolvedValue(mockTransactions);
 
     await getAllTransactions(mockRequest, mockResponse);
 
     expect(mockStatus).toHaveBeenCalledWith(200);
     expect(mockJson).toHaveBeenCalledWith(mockTransactions);
-    expect(mockCursor.limit).toHaveBeenCalledWith(100);
-    expect(mockCollection.find).toHaveBeenCalledWith({});
+    expect(mockDbInstance.transactions.find).toHaveBeenCalledWith(
+      { startDate: undefined, endDate: undefined },
+      { limit: 100 }
+    );
   });
 
   test('should filter by date range', async () => {
-    const mockCursor = {
-      limit: jest.fn().mockReturnThis(),
-      toArray: jest.fn().mockResolvedValue([])
-    };
-
     mockRequest.query = {
       startDate: '2025-01-01',
       endDate: '2025-01-31',
       'auth-token': 'valid-token'
     };
 
-    const mockCollection = {
-      find: jest.fn().mockReturnValue(mockCursor)
-    };
-
-    (connectToDatabase as jest.Mock).mockResolvedValue({
-      db: {
-        collection: jest.fn().mockReturnValue(mockCollection)
-      }
-    });
+    mockDbInstance.transactions.find.mockResolvedValue([]);
 
     await getAllTransactions(mockRequest, mockResponse);
 
-    expect(mockCollection.find).toHaveBeenCalledWith({
-      date_close_date: {
-        $gte: '2025-01-01 00:00:00',
-        $lte: '2025-01-31 23:59:59'
-      }
-    });
+    expect(mockDbInstance.transactions.find).toHaveBeenCalledWith(
+      { startDate: '2025-01-01', endDate: '2025-01-31' },
+      { limit: 100 }
+    );
+  });
+
+  test('should respect custom limit', async () => {
+    mockRequest.query = {
+      'auth-token': 'valid-token',
+      limit: '50'
+    };
+
+    mockDbInstance.transactions.find.mockResolvedValue([]);
+
+    await getAllTransactions(mockRequest, mockResponse);
+
+    expect(mockDbInstance.transactions.find).toHaveBeenCalledWith(
+      expect.anything(),
+      { limit: 50 }
+    );
+  });
+
+  test('should return 401 for invalid token', async () => {
+    mockRequest.query['auth-token'] = 'wrong-token';
+
+    await getAllTransactions(mockRequest, mockResponse);
+
+    expect(mockStatus).toHaveBeenCalledWith(401);
+    expect(mockJson).toHaveBeenCalledWith({ error: 'Unauthorized' });
   });
 
   test('should handle errors gracefully', async () => {
-    (connectToDatabase as jest.Mock).mockRejectedValue(new Error('Connection failed'));
+    (getDatabase as jest.Mock).mockRejectedValue(new Error('Connection failed'));
 
     await getAllTransactions(mockRequest, mockResponse);
 

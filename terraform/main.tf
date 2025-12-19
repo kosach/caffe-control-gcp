@@ -25,7 +25,8 @@ resource "google_project_service" "required_apis" {
     "cloudbuild.googleapis.com",
     "secretmanager.googleapis.com",
     "storage.googleapis.com",
-    "run.googleapis.com"
+    "run.googleapis.com",
+    "firestore.googleapis.com"
   ])
   
   service            = each.key
@@ -44,7 +45,8 @@ resource "google_service_account" "functions_sa" {
 resource "google_project_iam_member" "functions_sa_roles" {
   for_each = toset([
     "roles/secretmanager.secretAccessor",
-    "roles/logging.logWriter"
+    "roles/logging.logWriter",
+    "roles/datastore.user"
   ])
   
   project = var.project_id
@@ -96,11 +98,20 @@ resource "google_secret_manager_secret" "poster_hook_api_key" {
 
 resource "google_secret_manager_secret" "mongodb_uri" {
   secret_id = "mongodb-uri"
-  
+
   replication {
     auto {}
   }
-  
+
+  depends_on = [google_project_service.required_apis]
+}
+
+# Firestore Database (Native mode)
+resource "google_firestore_database" "main" {
+  name        = "(default)"
+  location_id = "eur3"
+  type        = "FIRESTORE_NATIVE"
+
   depends_on = [google_project_service.required_apis]
 }
 

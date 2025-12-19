@@ -9,6 +9,7 @@
     "test:watch": "jest --watch"
   },
   "dependencies": {
+    "@google-cloud/firestore": "^8.0.0",
     "@google-cloud/functions-framework": "^3.3.0",
     "@google-cloud/secret-manager": "^5.0.0",
     "axios": "^1.12.2",

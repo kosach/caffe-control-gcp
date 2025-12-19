@@ -1,5 +1,6 @@
 import { Request, Response } from '@google-cloud/functions-framework';
-import { connectToDatabase, getSecret } from '../../utils/mongodb';
+import { getDatabase } from '../../utils/database';
+import { getSecret } from '../../utils/mongodb';
 
 interface QueryParams {
   dateFrom?: string;
@@ -27,8 +28,9 @@ interface SyncStats {
 }
 
 /**
- * Synchronizes transactions from Poster API to MongoDB
+ * Synchronizes transactions from Poster API to database
  * Handles pagination and duplicate key errors gracefully
+ * Supports dual-write to MongoDB and Firestore
  */
 export async function syncTransactions(req: Request, res: Response) {
   try {
@@ -71,22 +73,18 @@ export async function syncTransactions(req: Request, res: Response) {
     let page = 1;
     let shouldContinue = true;
     let pagesWithoutNewRecords = 0;
-    const MAX_PAGES_WITHOUT_NEW_RECORDS = 10; // Stop after 10 pages with only duplicates
+    const MAX_PAGES_WITHOUT_NEW_RECORDS = 10;
 
-    // Connect to database
+    // Connect to database abstraction layer
     console.log('🔌 Connecting to database...');
-    const { db } = await connectToDatabase();
+    const db = await getDatabase();
     console.log('✅ Database connected');
-
-    const transactionsCollection = db.collection('transactions');
 
     // Pagination loop
     while (shouldContinue) {
       console.log(`📄 Processing page ${page}...`);
 
       // Build Poster API URL
-      // NOTE: dash.getTransactions does NOT support date filtering via API parameters
-      // We filter locally after fetching the data
       const params = new URLSearchParams({
         token: posterToken,
         page: page.toString(),
@@ -127,7 +125,6 @@ export async function syncTransactions(req: Request, res: Response) {
         console.log(`📦 Fetched ${transactions.length} transactions from page ${page}`);
 
         // Check if all transactions on this page are older than dateFrom
-        // If so, we can stop pagination (Poster returns newest first)
         const allTooOld = transactions.every((tx: any) => {
           const txDate = tx.date_close_date;
           if (!txDate) return true;
@@ -141,18 +138,15 @@ export async function syncTransactions(req: Request, res: Response) {
           break;
         }
 
-        // Filter transactions by date locally (since Poster API doesn't support date filtering)
+        // Filter transactions by date locally
         const originalCount = transactions.length;
         transactions = transactions.filter((tx: any) => {
-          const txDate = tx.date_close_date; // Format: "YYYY-MM-DD HH:MM:SS"
+          const txDate = tx.date_close_date;
           if (!txDate) return false;
 
-          const txDateOnly = txDate.split(' ')[0]; // Get "YYYY-MM-DD" part
+          const txDateOnly = txDate.split(' ')[0];
 
-          // Check if transaction is >= dateFrom
           if (dateFrom && txDateOnly < dateFrom) return false;
-
-          // Check if transaction is <= dateTo
           if (dateTo && txDateOnly > dateTo) return false;
 
           return true;
@@ -167,36 +161,16 @@ export async function syncTransactions(req: Request, res: Response) {
           continue;
         }
 
-        // Insert into MongoDB with unordered bulk write
-        // This continues on duplicate key errors
-        let insertedCount = 0;
-        try {
-          const result = await transactionsCollection.insertMany(
-            transactions,
-            { ordered: false }
-          );
+        // Insert using database abstraction (dual-write to MongoDB and Firestore)
+        const result = await db.transactions.insertMany(transactions);
 
-          insertedCount = result.insertedCount;
-          affectedRows += insertedCount;
-          console.log(`✅ Inserted ${insertedCount} new transactions`);
-        } catch (err: any) {
-          // Handle duplicate key errors (E11000)
-          if (err.code === 11000 || err.writeErrors) {
-            const duplicateCount = err.writeErrors?.length || 0;
-            insertedCount = err.result?.nInserted || 0;
+        affectedRows += result.insertedCount;
+        affectedWithError += result.duplicateCount;
 
-            affectedWithError += duplicateCount;
-            affectedRows += insertedCount;
-
-            console.log(`⚠️ Page ${page}: ${insertedCount} inserted, ${duplicateCount} duplicates skipped`);
-          } else {
-            // Re-throw unexpected errors
-            throw err;
-          }
-        }
+        console.log(`✅ Page ${page}: ${result.insertedCount} inserted, ${result.duplicateCount} duplicates skipped`);
 
         // Track pages without new records
-        if (insertedCount === 0) {
+        if (result.insertedCount === 0) {
           pagesWithoutNewRecords++;
           console.log(`📊 Pages without new records: ${pagesWithoutNewRecords}/${MAX_PAGES_WITHOUT_NEW_RECORDS}`);
 
@@ -206,14 +180,12 @@ export async function syncTransactions(req: Request, res: Response) {
             break;
           }
         } else {
-          // Reset counter if we found new records
           pagesWithoutNewRecords = 0;
         }
 
-        // Move to next page
         page++;
 
-        // Safety check: stop if we've processed many pages (prevent infinite loops)
+        // Safety check
         if (page > 1000) {
           console.warn('⚠️ Safety limit reached (1000 pages), stopping sync');
           shouldContinue = false;

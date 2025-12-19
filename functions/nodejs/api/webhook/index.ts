@@ -1,7 +1,7 @@
 import { Request, Response } from '@google-cloud/functions-framework';
-import { ObjectId } from 'mongodb';
 import axios from 'axios';
-import { connectToDatabase, getSecret } from '../../utils/mongodb';
+import { getDatabase, RawHookDocument } from '../../utils/database';
+import { getSecret } from '../../utils/mongodb';
 
 /**
  * Official Poster webhook actions
@@ -17,7 +17,6 @@ enum PosterAction {
 
 /**
  * Transaction history entry structure from Poster
- * Based on real webhook data
  */
 interface TransactionHistory {
   type_history: string;
@@ -27,7 +26,7 @@ interface TransactionHistory {
   value3: number | string;
   value4: number | string;
   value5: number | string | null;
-  value_text: string; // Can be JSON string with product details
+  value_text: string;
   user_id: number;
   spot_tablet_id: number;
 }
@@ -39,13 +38,12 @@ interface TransactionData {
   transactions_history?: TransactionHistory;
   status?: string;
   payed_sum?: string;
-  [key: string]: unknown; // Allow additional fields
+  [key: string]: unknown;
 }
 
 /**
  * Poster API response for dash.getTransaction
  * @see https://dev.joinposter.com/docs/v3/web/dash/getTransaction
- * @see docs/poster/getTtransaction.md
  */
 interface PosterTransaction {
   transaction_id: string;
@@ -104,50 +102,23 @@ interface PosterTransactionResponse {
 
 /**
  * Official Poster Webhook Format
- * Based on Poster API documentation
  * @see https://dev.joinposter.com/docs/v3/web/webhooks
  */
 interface PosterWebhook {
-  /** Client account that created the event */
   account: string;
-  /** Account number that created the event */
   account_number: string;
-  /** Entity for which the webhook was received (e.g., "transaction", "product", "client") */
   object: string;
-  /** Primary key of the object */
   object_id: number;
-  /** Action performed: added, changed, removed, transformed, closed */
   action: PosterAction;
-  /** Webhook sending time in Unix timestamp */
   time: string;
-  /** Request signature: md5(account;object;object_id;action;data;time;secret) */
   verify: string;
-  /** Additional parameter - JSON string or object with transaction data */
   data?: string | TransactionData;
-}
-
-/**
- * MongoDB document structure for poster-hooks-data collection
- * Stores complete webhook body at root level + metadata
- */
-interface RawHookDocument extends Partial<PosterWebhook> {
-  _id?: ObjectId;
-  metadata: {
-    received_at: Date;
-    processed: boolean;
-    processed_at: Date | null;
-    saved_to_transactions: boolean;
-    processing_error: string | null;
-    error_time: Date | null;
-  };
-  [key: string]: unknown;
 }
 
 const ALLOWED_ACTIONS = Object.values(PosterAction);
 
 /**
  * Fetch full transaction data from Poster API
- * @see docs/poster/getTtransaction.md
  */
 async function fetchPosterTransaction(
   transactionId: number,
@@ -159,12 +130,12 @@ async function fetchPosterTransaction(
     console.log('🔍 Fetching transaction from Poster API:', transactionId);
 
     const response = await axios.get<PosterTransactionResponse>(url, {
-      timeout: 10000 // 10 second timeout
+      timeout: 10000
     });
 
     if (response.data && response.data.response && response.data.response.length > 0) {
       console.log('✅ Poster API data fetched successfully');
-      return response.data.response[0]; // Return first element of array
+      return response.data.response[0];
     }
 
     console.warn('⚠️ Poster API returned empty response');
@@ -244,20 +215,15 @@ export async function webhook(req: Request, res: Response) {
 
     console.log('✅ API key validated');
 
-    const { db } = await connectToDatabase();
-    const rawHooksCollection = db.collection<RawHookDocument>('poster-hooks-data');
-    const transactionsCollection = db.collection('transactions');
-
+    const db = await getDatabase();
     const receivedAt = new Date();
 
-    // Store the complete raw webhook body at root level + metadata
+    // Store the complete raw webhook body + metadata
     const rawBodySnapshot = snapshotBody(req.body);
     const rawDocument: RawHookDocument = {
-      // Spread the entire webhook body at root level
       ...(typeof rawBodySnapshot === 'object' && rawBodySnapshot !== null
         ? rawBodySnapshot as Record<string, unknown>
         : { raw_body_string: rawBodySnapshot }),
-      // Add metadata
       metadata: {
         received_at: receivedAt,
         processed: false,
@@ -268,12 +234,11 @@ export async function webhook(req: Request, res: Response) {
       }
     };
 
-    let rawHookId: ObjectId;
+    let rawHookId: string;
 
     try {
-      const insertResult = await rawHooksCollection.insertOne(rawDocument);
-      rawHookId = insertResult.insertedId;
-      console.log('📝 RAW webhook stored:', rawHookId.toHexString());
+      rawHookId = await db.rawHooks.insertOne(rawDocument);
+      console.log('📝 RAW webhook stored:', rawHookId);
     } catch (error) {
       console.error('❌ Failed to store RAW webhook:', error);
       return res.status(500).json({
@@ -284,24 +249,25 @@ export async function webhook(req: Request, res: Response) {
 
     const markRawError = async (message: string) => {
       try {
-        await rawHooksCollection.updateOne(
-          { _id: rawHookId },
-          {
-            $set: {
-              'metadata.processing_error': message,
-              'metadata.error_time': new Date()
-            }
+        await db.rawHooks.updateOne(rawHookId, {
+          metadata: {
+            received_at: receivedAt,
+            processed: false,
+            processed_at: null,
+            saved_to_transactions: false,
+            processing_error: message,
+            error_time: new Date()
           }
-        );
+        });
       } catch (updateError) {
         console.error('⚠️ Failed to record RAW webhook error:', updateError);
       }
     };
 
-    let webhook: PosterWebhook;
+    let webhookData: PosterWebhook;
 
     try {
-      webhook = parsePayload(req.body);
+      webhookData = parsePayload(req.body);
     } catch (parseError) {
       const details =
         parseError instanceof Error ? parseError.message : 'Invalid payload';
@@ -313,14 +279,14 @@ export async function webhook(req: Request, res: Response) {
     }
 
     console.log('📦 Poster webhook:', {
-      object: webhook.object,
-      object_id: webhook.object_id,
-      action: webhook.action,
-      account: webhook.account
+      object: webhookData.object,
+      object_id: webhookData.object_id,
+      action: webhookData.action,
+      account: webhookData.account
     });
 
     // Validate required fields
-    if (!webhook.action) {
+    if (!webhookData.action) {
       const details = 'Missing required field: action';
       await markRawError(details);
       console.warn('⚠️ Missing action field');
@@ -330,17 +296,17 @@ export async function webhook(req: Request, res: Response) {
       });
     }
 
-    if (!ALLOWED_ACTIONS.includes(webhook.action)) {
-      const details = `Invalid action: ${webhook.action}. Allowed: ${ALLOWED_ACTIONS.join(', ')}`;
+    if (!ALLOWED_ACTIONS.includes(webhookData.action)) {
+      const details = `Invalid action: ${webhookData.action}. Allowed: ${ALLOWED_ACTIONS.join(', ')}`;
       await markRawError(details);
-      console.warn('⚠️ Invalid action:', webhook.action);
+      console.warn('⚠️ Invalid action:', webhookData.action);
       return res.status(400).json({
         error: 'Invalid payload',
         details
       });
     }
 
-    if (!webhook.object_id) {
+    if (!webhookData.object_id) {
       const details = 'Missing required field: object_id';
       await markRawError(details);
       console.warn('⚠️ Missing object_id field');
@@ -350,31 +316,26 @@ export async function webhook(req: Request, res: Response) {
       });
     }
 
-    const transactionId = webhook.object_id;
+    const transactionId = webhookData.object_id;
 
     console.log('✅ Webhook validated:', {
-      action: webhook.action,
+      action: webhookData.action,
       object_id: transactionId,
-      raw_hook_id: rawHookId.toHexString()
+      raw_hook_id: rawHookId
     });
 
-    // Only save to transactions collection if action is 'changed' or 'closed' (transaction completed)
+    // Only save to transactions collection if action is 'changed' or 'closed'
     let savedToTransactions = false;
 
-    if (webhook.action === PosterAction.Closed || webhook.action === PosterAction.Changed) {
+    if (webhookData.action === PosterAction.Closed || webhookData.action === PosterAction.Changed) {
       try {
         // Fetch full transaction data from Poster API
         const posterToken = await getSecret('poster-token');
         const posterApiData = await fetchPosterTransaction(transactionId, posterToken);
 
-        // Store ONLY Poster API transaction data if available
+        // Store Poster API transaction data if available
         if (posterApiData) {
-          // Use Poster API's transaction_id (string) as the unique key
-          await transactionsCollection.updateOne(
-            { transaction_id: posterApiData.transaction_id },
-            { $set: posterApiData },
-            { upsert: true }
-          );
+          await db.transactions.upsert(posterApiData.transaction_id, posterApiData);
           savedToTransactions = true;
           console.log('✅ Transaction saved:', posterApiData.transaction_id);
         } else {
@@ -392,39 +353,37 @@ export async function webhook(req: Request, res: Response) {
       }
     } else {
       console.log(
-        `ℹ️ Action "${webhook.action}" - RAW saved, transaction not persisted`
+        `ℹ️ Action "${webhookData.action}" - RAW saved, transaction not persisted`
       );
     }
 
     try {
-      await rawHooksCollection.updateOne(
-        { _id: rawHookId },
-        {
-          $set: {
-            'metadata.processed': true,
-            'metadata.processed_at': new Date(),
-            'metadata.saved_to_transactions': savedToTransactions,
-            'metadata.processing_error': null,
-            'metadata.error_time': null
-          }
+      await db.rawHooks.updateOne(rawHookId, {
+        metadata: {
+          received_at: receivedAt,
+          processed: true,
+          processed_at: new Date(),
+          saved_to_transactions: savedToTransactions,
+          processing_error: null,
+          error_time: null
         }
-      );
+      });
     } catch (updateError) {
       console.error('⚠️ Failed to mark RAW webhook as processed:', updateError);
     }
 
     console.log('✅ Webhook processing completed:', {
       object_id: transactionId,
-      action: webhook.action,
+      action: webhookData.action,
       saved_to_transactions: savedToTransactions
     });
 
     return res.status(200).json({
       success: true,
       object_id: transactionId,
-      action: webhook.action,
+      action: webhookData.action,
       saved_to_transactions: savedToTransactions,
-      raw_hook_id: rawHookId.toHexString()
+      raw_hook_id: rawHookId
     });
   } catch (error) {
     console.error('❌ Webhook processing failed:', error);
