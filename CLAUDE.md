@@ -211,6 +211,10 @@ git log --oneline -3
 - **Auth token required** on all functions
 - **Follow existing patterns** for consistency
 
+### Git Commits
+- **NEVER** add generated footers like "🤖 Generated with Claude Code" or "Co-Authored-By: Claude" to commit messages
+- Keep commit messages clean and professional
+
 ## Environment Variables
 
 Located in `.env` (gitignored):

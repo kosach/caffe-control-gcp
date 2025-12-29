@@ -21,7 +21,14 @@ dotenv.config();
 
 // Configuration
 const BATCH_SIZE = 500; // Firestore batch limit
-const COLLECTIONS_TO_MIGRATE = {
+
+interface CollectionConfig {
+  mongoCollection: string;
+  firestoreCollection: string;
+  idField: string | null;
+}
+
+const COLLECTIONS_TO_MIGRATE: Record<string, CollectionConfig> = {
   transactions: {
     mongoCollection: 'transactions',
     firestoreCollection: 'transactions',
@@ -30,7 +37,7 @@ const COLLECTIONS_TO_MIGRATE = {
   hooks: {
     mongoCollection: 'poster-hooks-data',
     firestoreCollection: 'poster-hooks-data',
-    idField: null // Use auto-generated ID
+    idField: null // Use MongoDB _id
   }
 };
 
@@ -98,7 +105,7 @@ function convertToFirestoreDoc(doc: Document): Record<string, unknown> {
 async function migrateCollection(
   mongoClient: MongoClient,
   firestore: Firestore,
-  collectionConfig: typeof COLLECTIONS_TO_MIGRATE.transactions,
+  collectionConfig: CollectionConfig,
   options: MigrationOptions
 ): Promise<MigrationStats> {
   const startTime = Date.now();
@@ -185,7 +192,7 @@ async function migrateCollection(
 async function verifyMigration(
   mongoClient: MongoClient,
   firestore: Firestore,
-  collectionConfig: typeof COLLECTIONS_TO_MIGRATE.transactions
+  collectionConfig: CollectionConfig
 ): Promise<boolean> {
   console.log(`\n🔍 Verifying collection: ${collectionConfig.mongoCollection}`);
 
