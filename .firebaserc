@@ -1,0 +1,13 @@
+{
+  "projects": {
+    "default": "caffe-control-prod"
+  },
+  "targets": {},
+  "etags": {
+    "caffe-control-prod": {
+      "extensionInstances": {
+        "firestore-bigquery-export": "cebfcd11796e86ec8a0d487f9ecc6a2e783816ca73e1f2dba0d30bb73bbd1953"
+      }
+    }
+  }
+}

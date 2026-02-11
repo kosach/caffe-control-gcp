@@ -4,10 +4,14 @@ import axios from 'axios';
 // Mock dependencies
 jest.mock('../../utils/database');
 jest.mock('../../utils/mongodb');
+jest.mock('../../utils/writeoffs');
+jest.mock('../../utils/catalog');
 jest.mock('axios');
 
 import { getDatabase } from '../../utils/database';
 import { getSecret } from '../../utils/mongodb';
+import { getTransactionWriteOffs } from '../../utils/writeoffs';
+import { getCatalog, createCatalogMap } from '../../utils/catalog';
 
 type MockRequest = {
   method?: string;
@@ -75,6 +79,20 @@ describe('webhook', () => {
       value: jest.fn().mockReturnValue(false),
       writable: true
     });
+
+    // Mock getTransactionWriteOffs to return empty array by default
+    (getTransactionWriteOffs as jest.Mock).mockResolvedValue([]);
+
+    // Mock catalog functions
+    const mockCatalog = [
+      { id: '123', name: 'Капучино', type: 1 },
+      { id: '456', name: 'Латте', type: 1 },
+      { id: '789', name: 'Еспресо', type: 1 }
+    ];
+    (getCatalog as jest.Mock).mockResolvedValue(mockCatalog);
+    (createCatalogMap as jest.Mock).mockReturnValue(
+      new Map(mockCatalog.map(item => [item.id, item]))
+    );
   });
 
   function buildRequest(overrides: Partial<MockRequest> = {}): MockRequest {
@@ -219,6 +237,7 @@ describe('webhook', () => {
       object_id: 789,
       action: 'added',
       saved_to_transactions: false,
+      write_offs_count: 0,
       raw_hook_id: mockRawHookId
     });
   });
@@ -246,6 +265,7 @@ describe('webhook', () => {
       object_id: 123,
       action: 'added',
       saved_to_transactions: false,
+      write_offs_count: 0,
       raw_hook_id: mockRawHookId
     });
   });
@@ -281,6 +301,7 @@ describe('webhook', () => {
       object_id: 999,
       action: 'changed',
       saved_to_transactions: true,
+      write_offs_count: 0,
       raw_hook_id: mockRawHookId
     });
   });
@@ -327,6 +348,7 @@ describe('webhook', () => {
       object_id: 555,
       action: 'removed',
       saved_to_transactions: false,
+      write_offs_count: 0,
       raw_hook_id: mockRawHookId
     });
   });
@@ -356,6 +378,7 @@ describe('webhook', () => {
       object_id: 7777,
       action: 'changed',
       saved_to_transactions: false,
+      write_offs_count: 0,
       raw_hook_id: mockRawHookId
     });
   });
@@ -381,7 +404,237 @@ describe('webhook', () => {
       object_id: 8888,
       action: 'closed',
       saved_to_transactions: true,
+      write_offs_count: 0,
       raw_hook_id: mockRawHookId
     });
+  });
+
+  test('fetches and includes write-offs for closed transaction', async () => {
+    const mockWriteOffs = [
+      {
+        write_off_id: '1001',
+        ingredient_id: '100',
+        ingredient_name: 'Coffee beans',
+        weight: 0.018,
+        unit: 'kg',
+        cost: 12.50,
+        type: 4
+      },
+      {
+        write_off_id: '1002',
+        ingredient_id: '101',
+        ingredient_name: 'Milk',
+        weight: 0.15,
+        unit: 'l',
+        cost: 4.00,
+        type: 4
+      }
+    ];
+
+    (getTransactionWriteOffs as jest.Mock).mockResolvedValueOnce(mockWriteOffs);
+
+    const req = buildRequest({
+      body: {
+        object_id: 9999,
+        action: 'closed',
+        data: '{"status":"2"}'
+      }
+    });
+    const res = createMockResponse();
+
+    await webhook(req as any, res as any);
+
+    // Should fetch write-offs
+    expect(getTransactionWriteOffs).toHaveBeenCalledWith(9999, 'test-poster-token');
+
+    // Should include write-offs in transaction upsert
+    expect(mockDbInstance.transactions.upsert).toHaveBeenCalledWith(
+      '123',
+      expect.objectContaining({
+        write_offs: mockWriteOffs,
+        write_offs_synced_at: expect.any(Date)
+      })
+    );
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.json).toHaveBeenCalledWith({
+      success: true,
+      object_id: 9999,
+      action: 'closed',
+      saved_to_transactions: true,
+      write_offs_count: 2,
+      raw_hook_id: mockRawHookId
+    });
+  });
+
+  test('saves transaction without write-offs when write-offs fetch fails', async () => {
+    (getTransactionWriteOffs as jest.Mock).mockRejectedValueOnce(new Error('Write-offs API error'));
+
+    const req = buildRequest({
+      body: {
+        object_id: 7000,
+        action: 'closed',
+        data: '{"status":"2"}'
+      }
+    });
+    const res = createMockResponse();
+
+    await webhook(req as any, res as any);
+
+    // Should still save transaction, just without write-offs
+    expect(mockDbInstance.transactions.upsert).toHaveBeenCalledWith(
+      '123',
+      expect.objectContaining({
+        write_offs: [],
+        write_offs_synced_at: null
+      })
+    );
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.json).toHaveBeenCalledWith({
+      success: true,
+      object_id: 7000,
+      action: 'closed',
+      saved_to_transactions: true,
+      write_offs_count: 0,
+      raw_hook_id: mockRawHookId
+    });
+  });
+
+  test('enriches products with names from catalog', async () => {
+    // Mock Poster API response with products
+    mockedAxios.get.mockResolvedValueOnce({
+      data: {
+        response: [{
+          transaction_id: '123',
+          date_close: '1518873046314',
+          status: '2',
+          payed_sum: '15000',
+          products: [
+            { product_id: '123', modification_id: '0', num: '1', payed_sum: '5000' },
+            { product_id: '456', modification_id: '0', num: '2', payed_sum: '10000' }
+          ]
+        }]
+      }
+    });
+
+    const req = buildRequest({
+      body: {
+        object_id: 5555,
+        action: 'closed',
+        data: '{"status":"2"}'
+      }
+    });
+    const res = createMockResponse();
+
+    await webhook(req as any, res as any);
+
+    // Should fetch catalog
+    expect(getCatalog).toHaveBeenCalledWith('test-poster-token');
+    expect(createCatalogMap).toHaveBeenCalled();
+
+    // Should save transaction with enriched products
+    expect(mockDbInstance.transactions.upsert).toHaveBeenCalledWith(
+      '123',
+      expect.objectContaining({
+        products: expect.arrayContaining([
+          expect.objectContaining({
+            product_id: '123',
+            product_name: 'Капучино'
+          }),
+          expect.objectContaining({
+            product_id: '456',
+            product_name: 'Латте'
+          })
+        ])
+      })
+    );
+
+    expect(res.status).toHaveBeenCalledWith(200);
+  });
+
+  test('saves transaction without product names when catalog fetch fails', async () => {
+    (getCatalog as jest.Mock).mockRejectedValueOnce(new Error('Catalog API error'));
+
+    // Mock Poster API response with products
+    mockedAxios.get.mockResolvedValueOnce({
+      data: {
+        response: [{
+          transaction_id: '123',
+          date_close: '1518873046314',
+          status: '2',
+          products: [
+            { product_id: '999', modification_id: '0', num: '1', payed_sum: '5000' }
+          ]
+        }]
+      }
+    });
+
+    const req = buildRequest({
+      body: {
+        object_id: 6666,
+        action: 'closed',
+        data: '{"status":"2"}'
+      }
+    });
+    const res = createMockResponse();
+
+    await webhook(req as any, res as any);
+
+    // Should still save transaction with original products (no product_name)
+    expect(mockDbInstance.transactions.upsert).toHaveBeenCalledWith(
+      '123',
+      expect.objectContaining({
+        products: expect.arrayContaining([
+          expect.objectContaining({
+            product_id: '999'
+          })
+        ])
+      })
+    );
+
+    expect(res.status).toHaveBeenCalledWith(200);
+  });
+
+  test('handles products not found in catalog (returns null for product_name)', async () => {
+    // Mock Poster API response with unknown product
+    mockedAxios.get.mockResolvedValueOnce({
+      data: {
+        response: [{
+          transaction_id: '123',
+          date_close: '1518873046314',
+          status: '2',
+          products: [
+            { product_id: '999', modification_id: '0', num: '1', payed_sum: '5000' }
+          ]
+        }]
+      }
+    });
+
+    const req = buildRequest({
+      body: {
+        object_id: 7777,
+        action: 'closed',
+        data: '{"status":"2"}'
+      }
+    });
+    const res = createMockResponse();
+
+    await webhook(req as any, res as any);
+
+    // Should save with null product_name for unknown product
+    expect(mockDbInstance.transactions.upsert).toHaveBeenCalledWith(
+      '123',
+      expect.objectContaining({
+        products: expect.arrayContaining([
+          expect.objectContaining({
+            product_id: '999',
+            product_name: null
+          })
+        ])
+      })
+    );
+
+    expect(res.status).toHaveBeenCalledWith(200);
   });
 });

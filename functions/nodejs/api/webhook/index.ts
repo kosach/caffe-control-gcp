@@ -2,6 +2,8 @@ import { Request, Response } from '@google-cloud/functions-framework';
 import axios from 'axios';
 import { getDatabase, RawHookDocument } from '../../utils/database';
 import { getSecret } from '../../utils/mongodb';
+import { getTransactionWriteOffs, TransactionWriteOff } from '../../utils/writeoffs';
+import { getCatalog, createCatalogMap, CatalogItem } from '../../utils/catalog';
 
 /**
  * Official Poster webhook actions
@@ -116,6 +118,39 @@ interface PosterWebhook {
 }
 
 const ALLOWED_ACTIONS = Object.values(PosterAction);
+
+/**
+ * Product from Poster transaction
+ */
+interface TransactionProduct {
+  product_id: string;
+  modification_id: string;
+  num: string;
+  payed_sum: string;
+  product_cost?: string;
+  product_profit?: string;
+  [key: string]: unknown;
+}
+
+/**
+ * Enriched product with name from catalog
+ */
+interface EnrichedProduct extends TransactionProduct {
+  product_name: string | null;
+}
+
+/**
+ * Enrich products with names from catalog
+ */
+function enrichProducts(
+  products: TransactionProduct[],
+  catalogMap: Map<string, CatalogItem>
+): EnrichedProduct[] {
+  return products.map(p => ({
+    ...p,
+    product_name: catalogMap.get(p.product_id)?.name ?? null
+  }));
+}
 
 /**
  * Fetch full transaction data from Poster API
@@ -326,6 +361,7 @@ export async function webhook(req: Request, res: Response) {
 
     // Only save to transactions collection if action is 'changed' or 'closed'
     let savedToTransactions = false;
+    let writeOffsCount = 0;
 
     if (webhookData.action === PosterAction.Closed || webhookData.action === PosterAction.Changed) {
       try {
@@ -335,7 +371,38 @@ export async function webhook(req: Request, res: Response) {
 
         // Store Poster API transaction data if available
         if (posterApiData) {
-          await db.transactions.upsert(posterApiData.transaction_id, posterApiData);
+          // Fetch and enrich write-offs for the transaction
+          let writeOffs: TransactionWriteOff[] = [];
+          try {
+            writeOffs = await getTransactionWriteOffs(transactionId, posterToken);
+            writeOffsCount = writeOffs.length;
+            console.log(`📦 Fetched ${writeOffsCount} write-offs for transaction ${transactionId}`);
+          } catch (writeOffsError) {
+            console.warn('⚠️ Failed to fetch write-offs, saving transaction without them:', writeOffsError);
+          }
+
+          // Enrich products with names from catalog
+          let enrichedProducts: EnrichedProduct[] = [];
+          try {
+            const catalog = await getCatalog(posterToken);
+            const catalogMap = createCatalogMap(catalog);
+            const products = (posterApiData.products || []) as TransactionProduct[];
+            enrichedProducts = enrichProducts(products, catalogMap);
+            console.log(`📦 Enriched ${enrichedProducts.length} products with names`);
+          } catch (catalogError) {
+            console.warn('⚠️ Failed to enrich products, saving without names:', catalogError);
+            enrichedProducts = (posterApiData.products || []) as EnrichedProduct[];
+          }
+
+          // Combine transaction data with write-offs and enriched products
+          const transactionWithEnrichments = {
+            ...posterApiData,
+            products: enrichedProducts,
+            write_offs: writeOffs,
+            write_offs_synced_at: writeOffs.length > 0 ? new Date() : null
+          };
+
+          await db.transactions.upsert(posterApiData.transaction_id, transactionWithEnrichments);
           savedToTransactions = true;
           console.log('✅ Transaction saved:', posterApiData.transaction_id);
         } else {
@@ -375,7 +442,8 @@ export async function webhook(req: Request, res: Response) {
     console.log('✅ Webhook processing completed:', {
       object_id: transactionId,
       action: webhookData.action,
-      saved_to_transactions: savedToTransactions
+      saved_to_transactions: savedToTransactions,
+      write_offs_count: writeOffsCount
     });
 
     return res.status(200).json({
@@ -383,6 +451,7 @@ export async function webhook(req: Request, res: Response) {
       object_id: transactionId,
       action: webhookData.action,
       saved_to_transactions: savedToTransactions,
+      write_offs_count: writeOffsCount,
       raw_hook_id: rawHookId
     });
   } catch (error) {

@@ -55,6 +55,36 @@
 - [ ] Add staging environment
 - [ ] Document rollback procedures
 
+### Story 001: Add Ingredients to Transactions (Firestore)
+> Збагатити транзакції даними про списання інгредієнтів для аналізу собівартості
+
+**Phase 1: Catalog with Lazy Cache** ✅
+- [x] Create `getCatalog()` function with 24h TTL lazy cache
+- [x] Implement Firestore read/write for `catalog/metadata`
+- [x] Implement `fetchCatalogFromPoster()` (menu.getProducts + menu.getIngredients)
+- [x] Filter ignored ingredient categories `[14, 17, 4, 6, 7, 8, 15, 18]`
+- [x] Apply type mapping (product type → write-off type)
+- [x] Write unit tests for catalog functions (21 tests passing)
+
+**Phase 2: Webhook Modification** ✅
+- [x] Update `webhook/index.ts` to fetch write-offs on new transaction
+- [x] Add `fetchTransactionWriteOffs(transactionId)` using `dash.getTransactionWriteoffs`
+- [x] Add `enrichWriteOffsWithCatalog(writeOffs, catalog)` function
+- [x] Save transaction with `write_offs` array to Firestore
+- [x] Update webhook tests (20 tests passing)
+- [x] Deploy webhook to GCP
+
+**Phase 3: Migration of Historical Data** ✅
+- [x] Create script `scripts/migrate-write-offs.ts`
+- [x] Use batch API `transactions.getTransactionsWriteOffs` for efficiency
+- [x] Implement month-by-month processing with progress logging
+- [x] Run migration for historical transactions (58,457 transactions, 331,372 write-offs)
+- [x] Verify migration results (99.6% coverage - 244 transactions without write-offs)
+
+**Phase 4: Analytics API**
+- [ ] Add `write_offs` field to `getAllTransactions` response
+- [ ] Update API documentation
+
 ### Future Enhancements
 - [ ] Add rate limiting
 - [ ] Implement caching strategy

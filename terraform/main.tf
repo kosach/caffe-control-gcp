@@ -26,7 +26,8 @@ resource "google_project_service" "required_apis" {
     "secretmanager.googleapis.com",
     "storage.googleapis.com",
     "run.googleapis.com",
-    "firestore.googleapis.com"
+    "firestore.googleapis.com",
+    "bigquery.googleapis.com"
   ])
   
   service            = each.key
@@ -111,6 +112,20 @@ resource "google_firestore_database" "main" {
   name        = "(default)"
   location_id = "eur3"
   type        = "FIRESTORE_NATIVE"
+
+  depends_on = [google_project_service.required_apis]
+}
+
+# BigQuery Dataset for analytics
+resource "google_bigquery_dataset" "caffe_control" {
+  dataset_id    = "caffe_control"
+  friendly_name = "Caffe Control Analytics"
+  description   = "Dataset for Firestore data export and analytics"
+  location      = "EU"
+
+  labels = {
+    environment = "production"
+  }
 
   depends_on = [google_project_service.required_apis]
 }
@@ -204,4 +219,9 @@ output "webhook_url" {
 output "syncTransactions_url" {
   description = "URL of syncTransactions function"
   value       = module.sync_transactions.function_uri
+}
+
+output "bigquery_dataset_id" {
+  description = "BigQuery dataset ID for analytics"
+  value       = google_bigquery_dataset.caffe_control.dataset_id
 }
