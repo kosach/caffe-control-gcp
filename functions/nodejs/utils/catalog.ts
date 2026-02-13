@@ -189,8 +189,8 @@ async function fetchCatalogFromPoster(posterToken: string): Promise<CatalogItem[
         id: product.product_id,
         name: product.product_name,
         type: PRODUCT_TYPE_MAP[productType] || 1,
-        unit: product.unit,
-        category_id: product.category_id
+        ...(product.unit !== undefined && { unit: product.unit }),
+        ...(product.category_id !== undefined && { category_id: product.category_id })
       });
     }
   }
@@ -218,8 +218,8 @@ async function fetchCatalogFromPoster(posterToken: string): Promise<CatalogItem[
         id: ingredient.ingredient_id,
         name: ingredient.ingredient_name,
         type: 4,  // ingredient type
-        unit: ingredient.ingredient_unit,
-        category_id: ingredient.category_id
+        ...(ingredient.ingredient_unit !== undefined && { unit: ingredient.ingredient_unit }),
+        ...(ingredient.category_id !== undefined && { category_id: ingredient.category_id })
       });
     }
   }

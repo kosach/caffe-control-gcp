@@ -398,6 +398,7 @@ export async function webhook(req: Request, res: Response) {
           const transactionWithEnrichments = {
             ...posterApiData,
             products: enrichedProducts,
+            products_enriched_at: enrichedProducts.length > 0 ? new Date() : null,
             write_offs: writeOffs,
             write_offs_synced_at: writeOffs.length > 0 ? new Date() : null
           };
