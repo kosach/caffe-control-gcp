@@ -33,3 +33,9 @@ diff.txt
 # AI
 .mcp.json
 ai-docs/
+
+# Terraform
+terraform/.terraform/
+terraform/*.tfstate*
+terraform/terraform-sa-key.json
+terraform/.terraform.lock.hcl
