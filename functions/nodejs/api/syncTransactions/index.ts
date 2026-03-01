@@ -43,14 +43,16 @@ export async function syncTransactions(req: Request, res: Response) {
       return res.status(401).json({ success: false, error: 'Unauthorized' });
     }
 
-    if (!dateFrom) {
-      return res.status(400).json({
-        success: false,
-        error: 'dateFrom parameter is required (format: YYYY-MM-DD)'
-      });
+    // Resolve special date values
+    let resolvedDateFrom = dateFrom;
+    if (!dateFrom || dateFrom === 'yesterday') {
+      const yesterday = new Date();
+      yesterday.setDate(yesterday.getDate() - 1);
+      resolvedDateFrom = yesterday.toISOString().slice(0, 10);
+      console.log(`📅 Resolved dateFrom to: ${resolvedDateFrom}`);
     }
 
-    console.log('📋 Sync params:', JSON.stringify({ dateFrom, dateTo, enrich: shouldEnrich }));
+    console.log('📋 Sync params:', JSON.stringify({ dateFrom: resolvedDateFrom, dateTo, enrich: shouldEnrich }));
 
     const posterToken = await getSecret('poster-token');
     const db = await getDatabase();
@@ -82,7 +84,7 @@ export async function syncTransactions(req: Request, res: Response) {
       console.log(`📄 Fetching page ${page}...`);
 
       // Poster API uses YYYYMMDD format without dashes
-      const dfParam = dateFrom.replace(/-/g, '');
+      const dfParam = resolvedDateFrom!.replace(/-/g, '');
       const dtParam = dateTo ? dateTo.replace(/-/g, '') : undefined;
 
       const params = new URLSearchParams({
