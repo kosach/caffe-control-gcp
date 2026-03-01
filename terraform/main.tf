@@ -27,7 +27,8 @@ resource "google_project_service" "required_apis" {
     "storage.googleapis.com",
     "run.googleapis.com",
     "firestore.googleapis.com",
-    "bigquery.googleapis.com"
+    "bigquery.googleapis.com",
+    "cloudscheduler.googleapis.com"
   ])
   
   service            = each.key
@@ -47,7 +48,9 @@ resource "google_project_iam_member" "functions_sa_roles" {
   for_each = toset([
     "roles/secretmanager.secretAccessor",
     "roles/logging.logWriter",
-    "roles/datastore.user"
+    "roles/datastore.user",
+    "roles/bigquery.dataEditor",
+    "roles/bigquery.jobUser"
   ])
   
   project = var.project_id
@@ -206,6 +209,24 @@ module "sync_transactions" {
   ]
 }
 
+module "sync_catalog" {
+  source = "./modules/cloud-function"
+
+  function_name         = "syncCatalog"
+  entry_point           = "syncCatalog"
+  source_dir            = "../functions/nodejs/dist-bundle/syncCatalog"
+  region                = var.region
+  service_account_email = google_service_account.functions_sa.email
+  project_id            = var.project_id
+  memory                = "256M"
+  timeout               = 120
+
+  depends_on = [
+    google_project_service.required_apis,
+    google_storage_bucket.functions_source
+  ]
+}
+
 output "getAllTransactions_url" {
   description = "URL of getAllTransactions function"
   value       = module.get_all_transactions.function_uri
@@ -219,6 +240,11 @@ output "webhook_url" {
 output "syncTransactions_url" {
   description = "URL of syncTransactions function"
   value       = module.sync_transactions.function_uri
+}
+
+output "syncCatalog_url" {
+  description = "URL of syncCatalog function"
+  value       = module.sync_catalog.function_uri
 }
 
 output "bigquery_dataset_id" {
