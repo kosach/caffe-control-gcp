@@ -2,13 +2,14 @@ import { defineConfig } from 'tsup';
 import fs from 'fs';
 import path from 'path';
 
-const functions = ['getAllTransactions', 'webhook', 'syncTransactions'];
+const functions = ['getAllTransactions', 'webhook', 'syncTransactions', 'syncCatalog'];
 
 export default defineConfig({
   entry: {
     'getAllTransactions': 'api/getAllTransactions/index.ts',
     'webhook': 'api/webhook/index.ts',
-    'syncTransactions': 'api/syncTransactions/index.ts'
+    'syncTransactions': 'api/syncTransactions/index.ts',
+    'syncCatalog': 'api/syncCatalog/index.ts'
   },
   format: ['cjs'],
   target: 'node20',
@@ -17,7 +18,7 @@ export default defineConfig({
   clean: true,
   sourcemap: false,
   minify: false,
-  external: ['@google-cloud/functions-framework', '@google-cloud/firestore'],
+  external: ['@google-cloud/functions-framework', '@google-cloud/firestore', '@google-cloud/bigquery'],
   noExternal: ['mongodb', '@google-cloud/secret-manager', 'axios'],
   onSuccess: async () => {
     // Create separate directories for each function
@@ -35,6 +36,13 @@ export default defineConfig({
       fs.copyFileSync(sourceFile, targetFile);
 
       // Create package.json for this function
+      const deps: Record<string, string> = {
+        '@google-cloud/firestore': '^7.11.0'
+      };
+      if (functionName === 'syncCatalog') {
+        deps['@google-cloud/bigquery'] = '^7.0.0';
+      }
+
       const packageJson = {
         name: `caffe-control-${functionName.toLowerCase()}`,
         version: '1.0.0',
@@ -43,9 +51,7 @@ export default defineConfig({
         engines: {
           node: '20'
         },
-        dependencies: {
-          '@google-cloud/firestore': '^7.11.0'
-        }
+        dependencies: deps
       };
 
       fs.writeFileSync(
