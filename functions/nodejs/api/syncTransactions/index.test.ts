@@ -3,9 +3,13 @@ import { syncTransactions } from './index';
 // Mock dependencies
 jest.mock('../../utils/database');
 jest.mock('../../utils/mongodb');
+jest.mock('../../utils/catalog');
+jest.mock('../../utils/enrichment');
 
 import { getDatabase } from '../../utils/database';
 import { getSecret } from '../../utils/mongodb';
+import { getCatalog, createCatalogMap } from '../../utils/catalog';
+import { fetchPosterTransaction, enrichTransaction } from '../../utils/enrichment';
 
 // Mock global fetch
 global.fetch = jest.fn();
@@ -18,6 +22,9 @@ describe('syncTransactions', () => {
   let mockDbInstance: any;
 
   beforeEach(() => {
+    jest.clearAllMocks();
+    global.fetch = jest.fn();
+
     mockJson = jest.fn();
     mockStatus = jest.fn().mockReturnValue({ json: mockJson });
 
@@ -43,7 +50,7 @@ describe('syncTransactions', () => {
     mockDbInstance = {
       transactions: {
         find: jest.fn(),
-        upsert: jest.fn(),
+        upsert: jest.fn().mockResolvedValue(undefined),
         insertMany: jest.fn()
       },
       rawHooks: {
@@ -54,11 +61,13 @@ describe('syncTransactions', () => {
 
     (getDatabase as jest.Mock).mockResolvedValue(mockDbInstance);
 
-    jest.clearAllMocks();
-  });
+    // Default catalog mocks
+    (getCatalog as jest.Mock).mockResolvedValue([]);
+    (createCatalogMap as jest.Mock).mockReturnValue(new Map());
 
-  afterEach(() => {
-    jest.clearAllMocks();
+    // Default enrichment mocks
+    (fetchPosterTransaction as jest.Mock).mockResolvedValue(null);
+    (enrichTransaction as jest.Mock).mockImplementation((txn: any) => Promise.resolve(txn));
   });
 
   test('should reject request without auth token', async () => {
@@ -93,36 +102,27 @@ describe('syncTransactions', () => {
     expect(mockStatus).toHaveBeenCalledWith(400);
     expect(mockJson).toHaveBeenCalledWith({
       success: false,
-      error: 'Bad Request',
-      message: 'dateFrom parameter is required (format: YYYY-MM-DD)'
+      error: 'dateFrom parameter is required (format: YYYY-MM-DD)'
     });
   });
 
-  test('should sync new transactions successfully', async () => {
+  test('should sync transactions without enrichment when enrich=false', async () => {
+    mockRequest.query.enrich = 'false';
+
     const mockTransactions = [
       { transaction_id: '1', payed_sum: '1000', date_close_date: '2025-01-15 10:00:00' },
       { transaction_id: '2', payed_sum: '2000', date_close_date: '2025-01-16 11:00:00' }
     ];
 
-    // Mock Poster API response
-    (global.fetch as jest.Mock).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({
-        response: mockTransactions,
-        count: 2
-      })
-    } as Response).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({
-        response: [],
-        count: 2
-      })
-    } as Response);
-
-    mockDbInstance.transactions.insertMany.mockResolvedValue({
-      insertedCount: 2,
-      duplicateCount: 0
-    });
+    (global.fetch as jest.Mock)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ response: mockTransactions })
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ response: [] })
+      } as Response);
 
     await syncTransactions(mockRequest, mockResponse);
 
@@ -130,43 +130,39 @@ describe('syncTransactions', () => {
     expect(mockJson).toHaveBeenCalledWith({
       success: true,
       data: {
-        totalRows: 2,
-        affectedRows: 2,
-        affectedWithError: 0,
+        totalFetched: 2,
+        synced: 2,
+        enriched: 0,
+        errors: 0,
         pagesProcessed: 1
       }
     });
 
-    expect(mockDbInstance.transactions.insertMany).toHaveBeenCalledWith(mockTransactions);
+    expect(mockDbInstance.transactions.upsert).toHaveBeenCalledTimes(2);
+    expect(fetchPosterTransaction).not.toHaveBeenCalled();
+    expect(getCatalog).not.toHaveBeenCalled();
   });
 
-  test('should handle duplicate transactions gracefully', async () => {
+  test('should sync and enrich transactions by default', async () => {
     const mockTransactions = [
       { transaction_id: '1', payed_sum: '1000', date_close_date: '2025-01-15 10:00:00' },
-      { transaction_id: '2', payed_sum: '2000', date_close_date: '2025-01-16 11:00:00' },
-      { transaction_id: '3', payed_sum: '3000', date_close_date: '2025-01-17 12:00:00' }
+      { transaction_id: '2', payed_sum: '2000', date_close_date: '2025-01-16 11:00:00' }
     ];
+    const mockFullTxn = { transaction_id: '1', products: [] };
+    const mockEnriched = { transaction_id: '1', products: [], write_offs: [] };
 
-    // Mock Poster API response
-    (global.fetch as jest.Mock).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({
-        response: mockTransactions,
-        count: 3
-      })
-    } as Response).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({
-        response: [],
-        count: 3
-      })
-    } as Response);
+    (global.fetch as jest.Mock)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ response: mockTransactions })
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ response: [] })
+      } as Response);
 
-    // Mock insertMany with duplicates
-    mockDbInstance.transactions.insertMany.mockResolvedValue({
-      insertedCount: 1,
-      duplicateCount: 2
-    });
+    (fetchPosterTransaction as jest.Mock).mockResolvedValue(mockFullTxn);
+    (enrichTransaction as jest.Mock).mockResolvedValue(mockEnriched);
 
     await syncTransactions(mockRequest, mockResponse);
 
@@ -174,21 +170,55 @@ describe('syncTransactions', () => {
     expect(mockJson).toHaveBeenCalledWith({
       success: true,
       data: {
-        totalRows: 3,
-        affectedRows: 1,
-        affectedWithError: 2,
+        totalFetched: 2,
+        synced: 2,
+        enriched: 2,
+        errors: 0,
         pagesProcessed: 1
       }
     });
+
+    expect(getCatalog).toHaveBeenCalledTimes(1);
+    expect(fetchPosterTransaction).toHaveBeenCalledTimes(2);
+    expect(enrichTransaction).toHaveBeenCalledTimes(2);
+    expect(mockDbInstance.transactions.upsert).toHaveBeenCalledTimes(2);
+  });
+
+  test('should fall back to raw data when fetchPosterTransaction returns null', async () => {
+    const mockTransactions = [
+      { transaction_id: '1', payed_sum: '1000', date_close_date: '2025-01-15 10:00:00' }
+    ];
+
+    (global.fetch as jest.Mock)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ response: mockTransactions })
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ response: [] })
+      } as Response);
+
+    (fetchPosterTransaction as jest.Mock).mockResolvedValue(null);
+
+    await syncTransactions(mockRequest, mockResponse);
+
+    expect(mockStatus).toHaveBeenCalledWith(200);
+    expect(mockJson).toHaveBeenCalledWith({
+      success: true,
+      data: expect.objectContaining({
+        synced: 1,
+        enriched: 0
+      })
+    });
+
+    expect(mockDbInstance.transactions.upsert).toHaveBeenCalledWith('1', mockTransactions[0]);
   });
 
   test('should handle empty results', async () => {
     (global.fetch as jest.Mock).mockResolvedValueOnce({
       ok: true,
-      json: async () => ({
-        response: [],
-        count: 0
-      })
+      json: async () => ({ response: [] })
     } as Response);
 
     await syncTransactions(mockRequest, mockResponse);
@@ -197,9 +227,10 @@ describe('syncTransactions', () => {
     expect(mockJson).toHaveBeenCalledWith({
       success: true,
       data: {
-        totalRows: 0,
-        affectedRows: 0,
-        affectedWithError: 0,
+        totalFetched: 0,
+        synced: 0,
+        enriched: 0,
+        errors: 0,
         pagesProcessed: 0
       }
     });
@@ -217,54 +248,59 @@ describe('syncTransactions', () => {
     expect(mockStatus).toHaveBeenCalledWith(500);
     expect(mockJson).toHaveBeenCalledWith({
       success: false,
-      error: 'Internal server error',
-      message: expect.stringContaining('Poster API error')
+      error: expect.stringContaining('Poster API error')
     });
   });
 
-  test('should handle database errors', async () => {
+  test('should count per-transaction errors without failing the whole sync', async () => {
     const mockTransactions = [
-      { transaction_id: '1', date_close_date: '2025-01-15 10:00:00' }
+      { transaction_id: '1', date_close_date: '2025-01-15 10:00:00' },
+      { transaction_id: '2', date_close_date: '2025-01-15 10:00:00' }
     ];
 
-    (global.fetch as jest.Mock).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({
-        response: mockTransactions,
-        count: 1
-      })
-    } as Response);
+    (global.fetch as jest.Mock)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ response: mockTransactions })
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ response: [] })
+      } as Response);
 
-    mockDbInstance.transactions.insertMany.mockRejectedValue(new Error('Database connection failed'));
-
-    await syncTransactions(mockRequest, mockResponse);
-
-    expect(mockStatus).toHaveBeenCalledWith(500);
-    expect(mockJson).toHaveBeenCalledWith({
-      success: false,
-      error: 'Internal server error',
-      message: 'Database connection failed'
-    });
-  });
-
-  test('should stop when all transactions are older than dateFrom', async () => {
-    const oldTransactions = [
-      { transaction_id: '1', date_close_date: '2024-12-01 10:00:00' },
-      { transaction_id: '2', date_close_date: '2024-12-15 11:00:00' }
-    ];
-
-    (global.fetch as jest.Mock).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({
-        response: oldTransactions,
-        count: 2
-      })
-    } as Response);
+    mockDbInstance.transactions.upsert
+      .mockRejectedValueOnce(new Error('DB write failed'))
+      .mockResolvedValueOnce(undefined);
 
     await syncTransactions(mockRequest, mockResponse);
 
     expect(mockStatus).toHaveBeenCalledWith(200);
-    // Should not have called insertMany since all are too old
-    expect(mockDbInstance.transactions.insertMany).not.toHaveBeenCalled();
+    expect(mockJson).toHaveBeenCalledWith({
+      success: true,
+      data: expect.objectContaining({
+        totalFetched: 2,
+        synced: 1,
+        errors: 1
+      })
+    });
+  });
+
+  test('should use dateFrom and dateTo in Poster API URL', async () => {
+    mockRequest.query.dateTo = '2025-01-31';
+    mockRequest.query.enrich = 'false';
+
+    (global.fetch as jest.Mock).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ response: [] })
+    } as Response);
+
+    await syncTransactions(mockRequest, mockResponse);
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      expect.stringContaining('date_from=20250101')
+    );
+    expect(global.fetch).toHaveBeenCalledWith(
+      expect.stringContaining('date_to=20250131')
+    );
   });
 });
