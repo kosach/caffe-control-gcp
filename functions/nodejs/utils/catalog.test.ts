@@ -384,6 +384,99 @@ describe('Catalog Service', () => {
     });
   });
 
+  describe('undefined value filtering (Firestore safety)', () => {
+    test('should exclude undefined unit and category_id from product items', async () => {
+      mockMetadataRef.get.mockResolvedValue({ exists: false });
+
+      mockFetch
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({
+            response: [
+              { product_id: '1', product_name: 'No Unit Product', type: '2' },
+              { product_id: '2', product_name: 'With Unit', type: '2', unit: 'шт', category_id: '10' }
+            ]
+          })
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ response: [] })
+        });
+
+      const result = await getCatalog();
+
+      // Product without unit/category_id should NOT have those keys at all
+      const noUnitProduct = result.find(i => i.id === '1')!;
+      expect(noUnitProduct).toBeDefined();
+      expect('unit' in noUnitProduct).toBe(false);
+      expect('category_id' in noUnitProduct).toBe(false);
+
+      // Product with unit/category_id should have them
+      const withUnitProduct = result.find(i => i.id === '2')!;
+      expect(withUnitProduct.unit).toBe('шт');
+      expect(withUnitProduct.category_id).toBe('10');
+    });
+
+    test('should exclude undefined unit from ingredient items', async () => {
+      mockMetadataRef.get.mockResolvedValue({ exists: false });
+
+      mockFetch
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ response: [] })
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({
+            response: [
+              { ingredient_id: '100', ingredient_name: 'No Unit', category_id: '5' },
+              { ingredient_id: '101', ingredient_name: 'With Unit', category_id: '9', ingredient_unit: 'кг' }
+            ]
+          })
+        });
+
+      const result = await getCatalog();
+
+      const noUnit = result.find(i => i.id === '100')!;
+      expect(noUnit).toBeDefined();
+      expect('unit' in noUnit).toBe(false);
+
+      const withUnit = result.find(i => i.id === '101')!;
+      expect(withUnit.unit).toBe('кг');
+    });
+
+    test('should not include any undefined values in catalog items', async () => {
+      mockMetadataRef.get.mockResolvedValue({ exists: false });
+
+      mockFetch
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({
+            response: [
+              { product_id: '1', product_name: 'Test', type: '3' }
+            ]
+          })
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({
+            response: [
+              { ingredient_id: '2', ingredient_name: 'Ing', category_id: '5' }
+            ]
+          })
+        });
+
+      const result = await getCatalog();
+
+      // No value in any item should be undefined (Firestore would reject it)
+      for (const item of result) {
+        for (const [key, value] of Object.entries(item)) {
+          expect(value).not.toBeUndefined();
+        }
+      }
+    });
+  });
+
   describe('error handling', () => {
     test('should throw error when Poster API returns error', async () => {
       mockMetadataRef.get.mockResolvedValue({ exists: false });
