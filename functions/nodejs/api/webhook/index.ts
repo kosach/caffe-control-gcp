@@ -320,50 +320,27 @@ export async function webhook(req: Request, res: Response) {
       account: webhookData.account
     });
 
-    // Validate required fields
-    if (!webhookData.action) {
-      const details = 'Missing required field: action';
-      await markRawError(details);
-      console.warn('⚠️ Missing action field');
-      return res.status(400).json({
-        error: 'Invalid payload',
-        details
-      });
-    }
-
-    if (!ALLOWED_ACTIONS.includes(webhookData.action)) {
-      const details = `Invalid action: ${webhookData.action}. Allowed: ${ALLOWED_ACTIONS.join(', ')}`;
-      await markRawError(details);
-      console.warn('⚠️ Invalid action:', webhookData.action);
-      return res.status(400).json({
-        error: 'Invalid payload',
-        details
-      });
-    }
-
-    if (!webhookData.object_id) {
-      const details = 'Missing required field: object_id';
-      await markRawError(details);
-      console.warn('⚠️ Missing object_id field');
-      return res.status(400).json({
-        error: 'Invalid payload',
-        details
-      });
-    }
-
+    // Log all webhook fields (no validation — we store everything in RAW)
     const transactionId = webhookData.object_id;
 
-    console.log('✅ Webhook validated:', {
-      action: webhookData.action,
+    console.log('✅ Webhook received & stored in RAW:', {
+      object: webhookData.object,
       object_id: transactionId,
+      action: webhookData.action,
       raw_hook_id: rawHookId
     });
 
-    // Only save to transactions collection if action is 'changed' or 'closed'
+    // Only enrich & save to transactions collection for transaction changed/closed
     let savedToTransactions = false;
     let writeOffsCount = 0;
 
-    if (webhookData.action === PosterAction.Closed || webhookData.action === PosterAction.Changed) {
+    const isTransactionEvent =
+      webhookData.object === 'transaction' &&
+      transactionId &&
+      ALLOWED_ACTIONS.includes(webhookData.action) &&
+      (webhookData.action === PosterAction.Closed || webhookData.action === PosterAction.Changed);
+
+    if (isTransactionEvent) {
       try {
         // Fetch full transaction data from Poster API
         const posterToken = await getSecret('poster-token');
